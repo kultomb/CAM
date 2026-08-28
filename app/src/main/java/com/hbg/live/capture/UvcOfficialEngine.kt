@@ -19,10 +19,10 @@ import com.hbg.live.stream.H264Encoder
 import com.hbg.live.util.StudioLogger
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.min
 
 /**
- * UVC Precision EOI Render Engine - Nạp Khung Hình Bất Đồng Bộ Qua Render Executor Dedicated Thread.
- * Tách biệt 100% luồng đọc USB ISOC và luồng Decode/Render SurfaceView giúp loại bỏ triệt để nghẽn luồng và nháy màn hình.
+ * UVC Precision EOI Render Engine - Nạp Khung Hình Bất Đồng Bộ Qua GPU Hardware Canvas.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -49,6 +49,7 @@ class UvcOfficialEngine(
 
     private var frameCount = 0L
     private var fpsStartTime = 0L
+    private var lastValidBitmap: Bitmap? = null
 
     companion object {
         private const val TAG = "UvcOfficialEngine"
@@ -169,7 +170,6 @@ class UvcOfficialEngine(
 
         nativeBridge = UvcNativeBridge(object : UvcNativeBridge.Listener {
             override fun onNativeFrame(jpeg: ByteArray) {
-                // Tách biệt luồng nhận USB bất đồng bộ: Nếu luồng decode đang bận, bỏ qua khung để luồng USB không bao giờ bị nghẽn
                 if (!isRendering.compareAndSet(false, true)) {
                     return
                 }
@@ -216,16 +216,16 @@ class UvcOfficialEngine(
                 val canvas = holder.lockCanvas()
                 if (canvas != null) {
                     try {
-                        val cw = canvas.width.toFloat()
-                        val ch = canvas.height.toFloat()
-                        val bw = bitmapToDraw.width.toFloat()
-                        val bh = bitmapToDraw.height.toFloat()
+                        val cw: Float = canvas.width.toFloat()
+                        val ch: Float = canvas.height.toFloat()
+                        val bw: Float = bitmapToDraw.width.toFloat()
+                        val bh: Float = bitmapToDraw.height.toFloat()
 
-                        val scale = minOf(cw / bw, ch / bh)
-                        val dw = bw * scale
-                        val dh = bh * scale
-                        val left = (cw - dw) / 2f
-                        val top = (ch - dh) / 2f
+                        val scale: Float = min(cw / bw, ch / bh)
+                        val dw: Float = bw * scale
+                        val dh: Float = bh * scale
+                        val left: Float = (cw - dw) / 2.0f
+                        val top: Float = (ch - dh) / 2.0f
 
                         canvas.drawColor(Color.BLACK)
                         val dstRect = RectF(left, top, left + dw, top + dh)
@@ -337,6 +337,7 @@ class UvcOfficialEngine(
 
     fun stopStream() {
         isStreaming = false
+        lastValidBitmap = null
         try {
             nativeBridge?.stop()
             nativeBridge = null

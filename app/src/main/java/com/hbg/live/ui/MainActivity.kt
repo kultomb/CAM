@@ -17,7 +17,6 @@ import android.text.InputType
 import android.view.SurfaceHolder
 import android.view.View
 import android.widget.EditText
-import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -34,7 +33,7 @@ import java.nio.ByteBuffer
 /**
  * Studio Controller - HBG LIVE CAMERA (Chuyên Nghiệp Đạt Chuẩn OBS / CameraFi Live)
  * Hỗ Trợ Phát Trực Tiếp Đan Luồng Kép (H.264 Video + AAC Audio) Lên Facebook Live & YouTube Live < 1 Giây.
- * Thanh Nút Chuyển Góc Quay Nhanh (0.5x Rộng, 1.0x Chính, 3.0x Tele) Chỉ Xổ Ra Khi Bấm Vào "CAM SAU", Ẩn Gọn Khi Dùng Cam Khác.
+ * Giao Diện Studio Tinh Gọn: Loại Bỏ Toàn Bộ Thông Báo Pop-up Rác, Chỉ Hiển Thị Thông Báo Trạng Thái Kết Nối Gọn Gàng Ở Đỉnh Màn Hình Top Banner.
  */
 class MainActivity : AppCompatActivity(), SurfaceHolder.Callback, 
     CameraSourceManager.CameraSourceListener, 
@@ -58,6 +57,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     private var streamHeight = 720
     private var streamBitrate = 2500000 // 2.5 Mbps
     private var isAutoBitrate = true
+
+    private var bannerHideRunnable: Runnable? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -106,7 +107,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
             audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
 
             if (cameraSourceManager.currentSourceMode == CameraSourceManager.VideoSourceMode.PHONE_BACK) {
-                // Toggles thanh sổ chọn ống kính khi nhấp lại vào nút CAM SAU
                 val isCurrentlyVisible = binding.layoutQuickLensBar.visibility == View.VISIBLE
                 binding.layoutQuickLensBar.visibility = if (isCurrentlyVisible) View.GONE else View.VISIBLE
             } else {
@@ -122,26 +122,23 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
             audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
         }
 
-        // --- Nút Chuyển Góc Quay Ống Kính Nhanh 1-Chạm (Chỉ hiện khi nhấn CAM SAU) ---
+        // --- Nút Chuyển Góc Quay Ống Kính Nhanh 1-Chạm (Không Thông Báo Toast) ---
         binding.btnLensUltraWide.setOnClickListener {
             binding.layoutNoSignal.visibility = View.GONE
             audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
             cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 0.5f)
-            Toast.makeText(this, "🟢 Đã chuyển sang Góc Siêu Rộng (0.5x)", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnLensMain.setOnClickListener {
             binding.layoutNoSignal.visibility = View.GONE
             audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
             cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 1.0f)
-            Toast.makeText(this, "🟢 Đã chuyển sang Camera Chính (1.0x)", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnLensTele.setOnClickListener {
             binding.layoutNoSignal.visibility = View.GONE
             audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
             cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 3.0f)
-            Toast.makeText(this, "🟢 Đã chuyển sang Camera Telephoto (3.0x)", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnAudioHdmi.setOnClickListener {
@@ -154,12 +151,10 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
         binding.btnPresetYoutube.setOnClickListener {
             binding.etRtmpUrl.setText(RtmpStreamerEngine.YOUTUBE_RTMP_URL)
-            Toast.makeText(this, "🔴 Đã chọn nền tảng YouTube Live", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnPresetFacebook.setOnClickListener {
             binding.etRtmpUrl.setText(RtmpStreamerEngine.FACEBOOK_RTMPS_URL)
-            Toast.makeText(this, "🟢 Đã chọn nền tảng Facebook Live (RTMPS)", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnToggleLive.setOnClickListener {
@@ -180,6 +175,22 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
         requestRequiredPermissions()
         startStatsTicker()
+    }
+
+    private fun showStudioNotification(message: String, isError: Boolean = false) {
+        runOnUiThread {
+            binding.tvNotificationBanner.text = message
+            binding.tvNotificationBanner.visibility = View.VISIBLE
+            binding.tvNotificationBanner.setBackgroundColor(
+                if (isError) 0xDDFF3B30.toInt() else 0xDD28A745.toInt()
+            )
+            bannerHideRunnable?.let { mainHandler.removeCallbacks(it) }
+            val hideRunnable = Runnable {
+                binding.tvNotificationBanner.visibility = View.GONE
+            }
+            bannerHideRunnable = hideRunnable
+            mainHandler.postDelayed(hideRunnable, 4500)
+        }
     }
 
     private fun showStudioSettingsMenu() {
@@ -233,7 +244,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
             streamBitrate = 2500000
         }
 
-        val label = if (width == 1920) "Full HD 1080p" else "HD 720p"
+        val label = if (width == 1920) "1080p Full HD" else "720p HD"
 
         if (isLive) {
             h264Encoder?.stop()
@@ -256,9 +267,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
             val resLabel = if (streamWidth == 1920) "1080p" else "720p"
             binding.tvStatusBadge.text = "🔴 LIVE BROADCASTING ($resLabel)"
-            Toast.makeText(this, "🚀 Đã áp dụng và chuyển luồng trực tiếp sang $label ($streamWidth x $streamHeight)!", Toast.LENGTH_LONG).show()
-        } else {
-            Toast.makeText(this, "🟢 Đã chọn độ phân giải $label ($streamWidth x $streamHeight)", Toast.LENGTH_SHORT).show()
+            showStudioNotification("🚀 ĐÃ CHUYỂN LUỒNG PHÁT SANG $label ($streamWidth x $streamHeight)!")
         }
     }
 
@@ -318,10 +327,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
             cameraSourceManager.h264Encoder = vEncoder
 
             val mbpsStr = "${streamBitrate / 1000000f} Mbps"
-            Toast.makeText(this, "🚀 Đã áp dụng Bitrate mới: $mbpsStr!", Toast.LENGTH_SHORT).show()
-        } else {
-            val mbpsStr = "${streamBitrate / 1000000f} Mbps"
-            Toast.makeText(this, "🟢 Đã cài đặt Bitrate: $mbpsStr", Toast.LENGTH_SHORT).show()
+            showStudioNotification("⚡ ĐÃ ĐỔI BĂNG THÔNG BITRATE SANG: $mbpsStr")
         }
     }
 
@@ -340,7 +346,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
                 if (kbps != null && kbps > 500) {
                     applyNewBitrate(kbps * 1000, false)
                 } else {
-                    Toast.makeText(this, "⚠️ Giá trị Bitrate không hợp lệ!", Toast.LENGTH_SHORT).show()
+                    showStudioNotification("⚠️ Giá trị Bitrate không hợp lệ!", isError = true)
                 }
             }
             .setNegativeButton("Hủy", null)
@@ -417,7 +423,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         binding.btnSourceFrontCam.setTextColor(if (isFront) activeColor else inactiveColor)
         binding.btnSourceFrontCam.strokeColor = ContextCompat.getColorStateList(this, if (isFront) R.color.accent_blue else R.color.card_stroke)
 
-        // Cập nhật màu nút bấm 1-chạm chuyển góc ống kính (0.5x Rộng, 1.0x Chính, 3.0x Tele)
         val zoom = cameraSourceManager.currentZoomRatio
         val isUltraWide = isBack && (zoom < 0.8f)
         val isMain = isBack && (zoom in 0.8f..2.2f)
@@ -466,7 +471,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         val key = binding.etStreamKey.text.toString().trim()
 
         if (key.isEmpty()) {
-            Toast.makeText(this, "⚠️ Vui lòng nhập Stream Key của Facebook Live!", Toast.LENGTH_LONG).show()
+            showStudioNotification("⚠️ Vui lòng nhập Stream Key của Facebook Live!", isError = true)
             return
         }
 
@@ -524,9 +529,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         isLive = true
 
         val resLabel = if (streamWidth == 1920) "1080p" else "720p"
-        val bitrateLabel = "${streamBitrate / 1000000f}Mbps"
-        Toast.makeText(this, "🚀 BẮT ĐẦU LIVE STREAM ($resLabel @ $bitrateLabel)", Toast.LENGTH_SHORT).show()
-
         binding.btnToggleLive.text = "⏹  STOP LIVE"
         binding.btnToggleLive.setBackgroundColor(ContextCompat.getColor(this, R.color.card_stroke))
         binding.tvStatusBadge.text = "🔴 LIVE BROADCASTING ($resLabel)"
@@ -548,6 +550,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         binding.btnToggleLive.setBackgroundColor(ContextCompat.getColor(this, R.color.live_red))
         binding.tvStatusBadge.text = "⚪ STANDBY"
         binding.tvStatusBadge.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        showStudioNotification("⚪ ĐÃ DỪNG PHÁT TRỰC TIẾP")
     }
 
     private fun startStatsTicker() {
@@ -591,7 +594,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     override fun onConnected() {
         runOnUiThread {
             val resLabel = if (streamWidth == 1920) "1080p Full HD" else "720p HD"
-            Toast.makeText(this, "🟢 ĐÃ KẾT NỐI LUỒNG KÉP ($resLabel) THÀNH CÔNG LÊN FACEBOOK LIVE!", Toast.LENGTH_SHORT).show()
+            showStudioNotification("🟢 ĐÃ KẾT NỐI LUỒNG ($resLabel) THÀNH CÔNG LÊN FACEBOOK LIVE!")
         }
     }
 
@@ -608,7 +611,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
     override fun onError(errorMsg: String) {
         runOnUiThread {
-            Toast.makeText(this, "❌ $errorMsg", Toast.LENGTH_LONG).show()
+            showStudioNotification("❌ $errorMsg", isError = true)
         }
     }
 

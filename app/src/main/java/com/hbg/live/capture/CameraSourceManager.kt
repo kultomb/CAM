@@ -132,8 +132,11 @@ class CameraSourceManager(
                 if (usbDevice != null) {
                     if (!usbManager.hasPermission(usbDevice)) {
                         StudioLogger.log(TAG, "Chưa có quyền USB Permission. Đang kích hoạt Popup hệ thống xin quyền truy cập USB Video...")
+                        val intent = android.content.Intent(ACTION_USB_PERMISSION).apply {
+                            setPackage(context.packageName)
+                        }
                         val permissionIntent = android.app.PendingIntent.getBroadcast(
-                            context, 0, android.content.Intent(ACTION_USB_PERMISSION),
+                            context, 0, intent,
                             if (android.os.Build.VERSION.SDK_INT >= 31) android.app.PendingIntent.FLAG_MUTABLE else 0
                         )
                         usbManager.requestPermission(usbDevice, permissionIntent)

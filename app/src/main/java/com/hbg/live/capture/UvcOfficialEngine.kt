@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Tự động chọn đúng packetSize gốc (1024) từ UsbEndpoint và kích hoạt Alternate Setting 1 cho MS2109 USB Capture Card.
+ * Tự động trích xuất exact maxPacketSize của Alternate Setting đang hoạt động nhằm loại bỏ triệt để lỗi errno=90 (Message too long).
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -117,7 +117,19 @@ class UvcOfficialEngine(
                 // 1. Gửi UVC Probe & Commit Control Transfer TRƯỚC để chốt định dạng MJPEG
                 performFullProbeCommitDebug(connection, targetInterface.id)
 
-                // 2. Dò tìm Endpoint ISOC/Bulk khả dụng và lấy packetSize thực tế
+                // 2. Kích hoạt Alternate Setting thích hợp
+                var altSetting = 1
+                val altSettingsToTry = intArrayOf(1, 2, 3, 4, 5, 6, 7)
+                for (alt in altSettingsToTry) {
+                    val setOk = connection.setInterface(targetInterface)
+                    if (setOk) {
+                        altSetting = alt
+                        logDebug("🟢 Kích hoạt thành công Alternate Setting $alt trên Interface ${targetInterface.id}")
+                        break
+                    }
+                }
+
+                // 3. Lấy chính xác epAddr và maxPacketSize hợp lệ của Kernel Linux SAU KHI setInterface
                 var epAddr = 0x83
                 var maxPacketSize = 1024
 
@@ -126,19 +138,7 @@ class UvcOfficialEngine(
                     if (ep.direction == UsbConstants.USB_DIR_IN) {
                         epAddr = ep.address
                         maxPacketSize = ep.maxPacketSize
-                        logDebug("🔍 Tìm thấy USB Endpoint: Address = 0x${Integer.toHexString(epAddr)}, Base PacketSize = $maxPacketSize")
-                        break
-                    }
-                }
-
-                // 3. Ưu tiên Alternate Setting 1 cho MS2109 MJPEG ISOC Streaming
-                var altSetting = 1
-                val altSettingsToTry = intArrayOf(1, 2, 3, 4, 5, 6, 7)
-                for (alt in altSettingsToTry) {
-                    val setOk = connection.setInterface(targetInterface)
-                    if (setOk) {
-                        altSetting = alt
-                        logDebug("🟢 Kích hoạt thành công Alternate Setting $alt trên Interface ${targetInterface.id}")
+                        logDebug("🔍 Lấy Kernel PacketSize thực tế cho Alt $altSetting: Address = 0x${Integer.toHexString(epAddr)}, PacketSize = $maxPacketSize")
                         break
                     }
                 }

@@ -28,7 +28,7 @@ static constexpr size_t MAX_FRAME_SIZE = 4 * 1024 * 1024;
 struct UvcEngineContext {
     int fd = -1;
     int epAddr = 0x83;
-    int maxPacketSize = 3072;
+    int maxPacketSize = 5120;
     int altSetting = 3;
 
     std::atomic<bool> running{false};
@@ -37,6 +37,7 @@ struct UvcEngineContext {
     JavaVM* jvm = nullptr;
     jobject bridgeObject = nullptr;
     jmethodID onFrameMethod = nullptr;
+    ANativeWindow* nativeWindow = nullptr;
 
     std::mutex frameMutex;
     std::vector<uint8_t> frameBuffer;
@@ -79,10 +80,10 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 }
 
 static void workerLoop(UvcEngineContext* ctx) {
-    int packetSize = ctx->maxPacketSize > 0 ? ctx->maxPacketSize : 3072;
+    int packetSize = ctx->maxPacketSize > 0 ? ctx->maxPacketSize : 5120;
     int urbBufferSize = ISO_PACKETS * packetSize;
 
-    LOGI("🟢 Dynamic 16KB UVC Native Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+    LOGI("🟢 Enterprise 16KB UVC Native Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          ctx->fd, ctx->epAddr, packetSize, ctx->altSetting);
 
     int ifnum = 1;
@@ -187,18 +188,23 @@ static void workerLoop(UvcEngineContext* ctx) {
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
         if (elapsed >= 1000) {
-            LOGI("🟢 [16KB DYNAMIC NATIVE UVC] FPS=%d", ctx->fpsFrames);
+            LOGI("🟢 [ENTERPRISE 16KB NATIVE UVC ENGINE] FPS=%d", ctx->fpsFrames);
             ctx->fpsFrames = 0;
             ctx->fpsStart = now;
         }
     }
 
+    // Discard any pending URBs & Release interface 1 khi dừng
+    for (int i = 0; i < URB_COUNT; ++i) {
+        struct usbdevfs_urb* urb = reinterpret_cast<struct usbdevfs_urb*>(urbMemories[i].data());
+        ioctl(ctx->fd, USBDEVFS_DISCARDURB, urb);
+    }
     ioctl(ctx->fd, USBDEVFS_RELEASEINTERFACE, &ifnum);
     LOGI("USBDEVFS_RELEASEINTERFACE Interface 1 released cleanly");
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(JNIEnv* env, jobject thiz, jint fd, jint epAddr, jint maxPacketSize, jint altSetting, jobject) {
+Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(JNIEnv* env, jobject thiz, jint fd, jint epAddr, jint maxPacketSize, jint altSetting, jobject surface) {
     std::lock_guard<std::mutex> lock(g_ctxMutex);
     if (g_ctx) return -1;
 
@@ -207,6 +213,10 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(JNIEnv* env, jobject thiz,
     ctx->epAddr = epAddr;
     ctx->maxPacketSize = maxPacketSize;
     ctx->altSetting = altSetting;
+
+    if (surface) {
+        ctx->nativeWindow = ANativeWindow_fromSurface(env, surface);
+    }
 
     env->GetJavaVM(&ctx->jvm);
     ctx->bridgeObject = env->NewGlobalRef(thiz);
@@ -233,6 +243,10 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStop(JNIEnv* env, jobject) {
     if (ctx->workerThread.joinable()) {
         ctx->workerThread.join();
     }
+    if (ctx->nativeWindow) {
+        ANativeWindow_release(ctx->nativeWindow);
+        ctx->nativeWindow = nullptr;
+    }
     if (ctx->bridgeObject) {
         env->DeleteGlobalRef(ctx->bridgeObject);
     }
@@ -246,6 +260,6 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeIsRunning(JNIEnv*, jobject) {
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
-    LOGI("HBG UVC Dynamic Native 16KB Aligned loaded");
+    LOGI("HBG UVC Enterprise Native 16KB Aligned loaded");
     return JNI_VERSION_1_6;
 }

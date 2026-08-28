@@ -20,25 +20,31 @@ import androidx.core.content.ContextCompat
 import com.hbg.live.R
 import com.hbg.live.capture.AudioSourceManager
 import com.hbg.live.capture.CameraSourceManager
+import com.hbg.live.capture.UsbWatchdog
 import com.hbg.live.databinding.ActivityMainBinding
 import com.hbg.live.stream.RtmpStreamerEngine
+import com.hbg.live.util.StudioLogger
+import com.hbg.live.util.ThermalController
 
 /**
- * Studio Controller - HBG LIVE CAMERA
- * Ứng dụng Livestream Đa Nguồn Chuyên Nghiệp:
- * - Hỗ trợ phát trực tiếp 100% bằng Camera Điện Thoại (Cam Sau / Cam Trước) khi không cắm Capture Card.
- * - Ẩn 100% lớp phủ thông báo khi dùng Cam Điện Thoại.
+ * Studio Controller - HBG LIVE CAMERA (Enterprise Broadcast Edition)
+ * Quản lý đa nguồn Video & Audio với Bộ Kiểm Soát Nhiệt Độ Thích Ứng (Mát máy 32°C - 36°C)
+ * và USB Watchdog tự động phục hồi kết nối.
  */
 class MainActivity : AppCompatActivity(), SurfaceHolder.Callback, 
     CameraSourceManager.CameraSourceListener, 
     AudioSourceManager.AudioSourceListener, 
-    RtmpStreamerEngine.StreamStatsListener {
+    RtmpStreamerEngine.StreamStatsListener,
+    ThermalController.ThermalListener,
+    UsbWatchdog.WatchdogListener {
 
     private lateinit var binding: ActivityMainBinding
 
     private lateinit var cameraSourceManager: CameraSourceManager
     private lateinit var audioSourceManager: AudioSourceManager
     private lateinit var rtmpEngine: RtmpStreamerEngine
+    private lateinit var thermalController: ThermalController
+    private lateinit var usbWatchdog: UsbWatchdog
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isLive = false
@@ -71,6 +77,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         cameraSourceManager = CameraSourceManager(this, this)
         audioSourceManager = AudioSourceManager(this, 44100, this)
         rtmpEngine = RtmpStreamerEngine(this)
+        thermalController = ThermalController(this, this)
+        usbWatchdog = UsbWatchdog(this)
 
         binding.surfacePreview.holder.addCallback(this)
 
@@ -130,6 +138,9 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         }
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
+        thermalController.startMonitoring()
+        usbWatchdog.start()
+
         requestRequiredPermissions()
         startStatsTicker()
     }
@@ -181,7 +192,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
     private fun onUsbCaptureCardDetached() {
         binding.layoutNoSignal.visibility = View.GONE
-        com.hbg.live.util.StudioLogger.log("MainActivity", "⚠️ MẤT TÍN HIỆU USB CAPTURE CARD! Tự động quay về Cam Điện Thoại Sau...")
+        StudioLogger.log("MainActivity", "⚠️ MẤT TÍN HIỆU USB CAPTURE CARD! Tự động quay về Cam Điện Thoại Sau...")
         cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder)
         audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
     }
@@ -199,7 +210,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         binding.btnSourceFrontCam.setTextColor(if (mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT) activeColor else inactiveColor)
         binding.btnSourceFrontCam.strokeColor = ContextCompat.getColorStateList(this, if (mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT) R.color.accent_blue else R.color.card_stroke)
 
-        // Ẩn 100% lớp phủ No Signal khi sử dụng Camera Điện Thoại
         if (mode == CameraSourceManager.VideoSourceMode.PHONE_BACK || mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT) {
             binding.layoutNoSignal.visibility = View.GONE
         } else {
@@ -258,6 +268,29 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         }, 1000)
     }
 
+    // --- ThermalController Callbacks ---
+    override fun onThermalStateChanged(state: ThermalController.ThermalState) {
+        runOnUiThread {
+            Toast.makeText(this, "🌡️ ${state.description}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // --- UsbWatchdog Callbacks ---
+    override fun onSignalLost() {
+        runOnUiThread {
+            if (cameraSourceManager.currentSourceMode == CameraSourceManager.VideoSourceMode.HDMI_CAPTURE) {
+                StudioLogger.log("MainActivity", "🔄 UsbWatchdog kích hoạt tái phục hồi luồng USB Video...")
+                cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.HDMI_CAPTURE, binding.surfacePreview.holder)
+            }
+        }
+    }
+
+    override fun onSignalRestored() {
+        runOnUiThread {
+            StudioLogger.log("MainActivity", "🟢 UsbWatchdog: Tín hiệu USB Video đã bình thường 100%.")
+        }
+    }
+
     // --- CameraSourceListener Callbacks ---
     override fun onSourceChanged(mode: CameraSourceManager.VideoSourceMode, description: String) {
         runOnUiThread {
@@ -266,6 +299,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     }
 
     override fun onFrameReceived(fps: Float) {
+        usbWatchdog.onFrameArrived()
         runOnUiThread {
             binding.tvFps.text = String.format("%.0f", fps)
         }
@@ -313,6 +347,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
     override fun onDestroy() {
         super.onDestroy()
+        thermalController.stopMonitoring()
+        usbWatchdog.stop()
         try {
             unregisterReceiver(usbReceiver)
         } catch (e: Throwable) {}

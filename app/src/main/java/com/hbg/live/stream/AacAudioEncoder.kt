@@ -51,11 +51,8 @@ class AacAudioEncoder(
             val audioFormat = AudioFormat.ENCODING_PCM_16BIT
 
             val audioManager = context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
-            val inputDevices = if (android.os.Build.VERSION.SDK_INT >= 23 && audioManager != null) {
-                audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-            } else emptyArray()
-
-            val usbAudioDevice = if (isHdmiAudioMode && android.os.Build.VERSION.SDK_INT >= 23) {
+            val usbAudioDevice: AudioDeviceInfo? = if (isHdmiAudioMode && android.os.Build.VERSION.SDK_INT >= 23 && audioManager != null) {
+                val inputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
                 inputDevices.firstOrNull {
                     it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
                     it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
@@ -81,8 +78,8 @@ class AacAudioEncoder(
 
                 for (src in sourcesToTry) {
                     try {
-                        val builder = if (android.os.Build.VERSION.SDK_INT >= 23) {
-                            AudioRecord.Builder()
+                        if (android.os.Build.VERSION.SDK_INT >= 23) {
+                            val builder = AudioRecord.Builder()
                                 .setAudioSource(src)
                                 .setAudioFormat(
                                     AudioFormat.Builder()
@@ -92,24 +89,32 @@ class AacAudioEncoder(
                                         .build()
                                 )
                                 .setBufferSizeInBytes(bufferSize)
-                        } else null
 
-                        if (builder != null && usbAudioDevice != null) {
-                            builder.setPreferredDevice(usbAudioDevice)
-                        }
-
-                        val r = builder?.build() ?: AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
-
-                        if (r.state == AudioRecord.STATE_INITIALIZED) {
-                            record = r
-                            actualSampleRate = sr
-                            if (usbAudioDevice != null && android.os.Build.VERSION.SDK_INT >= 23) {
-                                r.setPreferredDevice(usbAudioDevice)
-                                Log.d(TAG, "🟢 AacAudioEncoder khóa cứng USB Audio Class (UAC) HDMI Capture: ${usbAudioDevice.productName} ($sr Hz)")
+                            if (usbAudioDevice != null) {
+                                builder.setPreferredDevice(usbAudioDevice)
                             }
-                            break
+
+                            val r = builder.build()
+                            if (r.state == AudioRecord.STATE_INITIALIZED) {
+                                record = r
+                                actualSampleRate = sr
+                                if (usbAudioDevice != null) {
+                                    r.setPreferredDevice(usbAudioDevice)
+                                    Log.d(TAG, "🟢 AacAudioEncoder khóa cứng USB Audio Class (UAC) HDMI Capture: ${usbAudioDevice.productName} ($sr Hz)")
+                                }
+                                break
+                            } else {
+                                r.release()
+                            }
                         } else {
-                            r.release()
+                            val r = AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
+                            if (r.state == AudioRecord.STATE_INITIALIZED) {
+                                record = r
+                                actualSampleRate = sr
+                                break
+                            } else {
+                                r.release()
+                            }
                         }
                     } catch (e: Throwable) {}
                 }

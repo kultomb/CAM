@@ -65,11 +65,8 @@ class AudioSourceManager(
             MediaRecorder.AudioSource.VOICE_RECOGNITION
         )
 
-        val inputDevices = if (android.os.Build.VERSION.SDK_INT >= 23) {
-            audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-        } else emptyArray()
-
-        val usbAudioDevice = if (mode == AudioSourceMode.HDMI_AUDIO && android.os.Build.VERSION.SDK_INT >= 23) {
+        val usbAudioDevice: AudioDeviceInfo? = if (mode == AudioSourceMode.HDMI_AUDIO && android.os.Build.VERSION.SDK_INT >= 23) {
+            val inputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
             inputDevices.firstOrNull {
                 it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
                 it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
@@ -86,8 +83,8 @@ class AudioSourceManager(
 
             for (src in sourcesToTry) {
                 try {
-                    val builder = if (android.os.Build.VERSION.SDK_INT >= 23) {
-                        AudioRecord.Builder()
+                    if (android.os.Build.VERSION.SDK_INT >= 23) {
+                        val builder = AudioRecord.Builder()
                             .setAudioSource(src)
                             .setAudioFormat(
                                 AudioFormat.Builder()
@@ -97,23 +94,30 @@ class AudioSourceManager(
                                     .build()
                             )
                             .setBufferSizeInBytes(bufferSize)
-                    } else null
 
-                    if (builder != null && usbAudioDevice != null) {
-                        builder.setPreferredDevice(usbAudioDevice)
-                    }
-
-                    val r = builder?.build() ?: AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
-
-                    if (r.state == AudioRecord.STATE_INITIALIZED) {
-                        record = r
-                        if (usbAudioDevice != null && android.os.Build.VERSION.SDK_INT >= 23) {
-                            r.setPreferredDevice(usbAudioDevice)
-                            StudioLogger.log(TAG, "🟢 Khóa cứng thiết bị thu âm USB Audio Class (UAC) Capture Card: ${usbAudioDevice.productName} ($sr Hz)")
+                        if (usbAudioDevice != null) {
+                            builder.setPreferredDevice(usbAudioDevice)
                         }
-                        break
+
+                        val r = builder.build()
+                        if (r.state == AudioRecord.STATE_INITIALIZED) {
+                            record = r
+                            if (usbAudioDevice != null) {
+                                r.setPreferredDevice(usbAudioDevice)
+                                StudioLogger.log(TAG, "🟢 Khóa cứng thiết bị thu âm USB Audio Class (UAC) Capture Card: ${usbAudioDevice.productName} ($sr Hz)")
+                            }
+                            break
+                        } else {
+                            r.release()
+                        }
                     } else {
-                        r.release()
+                        val r = AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
+                        if (r.state == AudioRecord.STATE_INITIALIZED) {
+                            record = r
+                            break
+                        } else {
+                            r.release()
+                        }
                     }
                 } catch (e: Throwable) {}
             }

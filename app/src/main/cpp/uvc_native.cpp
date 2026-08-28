@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/usbdevice_fs.h>
+#include <errno.h>
 
 #include <atomic>
 #include <chrono>
@@ -29,7 +30,7 @@ struct UvcEngineContext {
     int fd = -1;
     int ifaceId = 1;
     int epAddr = 0x83;
-    int maxPacketSize = 3072;
+    int maxPacketSize = 1024;
     int altSetting = 1;
 
     std::atomic<bool> running{false};
@@ -80,22 +81,28 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 }
 
 static void workerLoop(UvcEngineContext* ctx) {
-    int packetSize = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 3072;
+    int packetSize = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 1024;
     int targetEp = (ctx->epAddr != 0) ? ctx->epAddr : 0x83;
     int altSetting = (ctx->altSetting > 0) ? ctx->altSetting : 1;
     int ifaceId = ctx->ifaceId;
 
     int urbBufferSize = ISO_PACKETS * packetSize;
 
-    LOGI("🟢 UVC Precision ISO Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+    LOGI("🟢 UVC Direct Render Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          ctx->fd, ifaceId, targetEp, packetSize, altSetting);
 
-    ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifaceId);
+    int claimRc = ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifaceId);
+    if (claimRc < 0) {
+        LOGE("❌ USBDEVFS_CLAIMINTERFACE (iface=%d) thất bại: errno=%d (%s)", ifaceId, errno, strerror(errno));
+    }
 
     struct usbdevfs_setinterface setif;
     setif.interface = ifaceId;
     setif.altsetting = altSetting;
-    ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
+    int setIfRc = ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
+    if (setIfRc < 0) {
+        LOGE("❌ USBDEVFS_SETINTERFACE (iface=%d, alt=%d) thất bại: errno=%d (%s)", ifaceId, altSetting, errno, strerror(errno));
+    }
 
     size_t urbStructSize = sizeof(struct usbdevfs_urb) + (ISO_PACKETS * sizeof(struct usbdevfs_iso_packet_desc));
     std::vector<std::vector<uint8_t>> urbMemories(URB_COUNT, std::vector<uint8_t>(urbStructSize, 0));
@@ -114,7 +121,10 @@ static void workerLoop(UvcEngineContext* ctx) {
             urb->iso_frame_desc[p].length = packetSize;
         }
 
-        ioctl(ctx->fd, USBDEVFS_SUBMITURB, urb);
+        int submitRc = ioctl(ctx->fd, USBDEVFS_SUBMITURB, urb);
+        if (submitRc < 0) {
+            LOGE("❌ USBDEVFS_SUBMITURB URB[%d] thất bại: errno=%d (%s)", i, errno, strerror(errno));
+        }
     }
 
     ctx->fpsStart = std::chrono::steady_clock::now();
@@ -198,7 +208,7 @@ static void workerLoop(UvcEngineContext* ctx) {
         } else {
             emptyReapCount++;
             if (emptyReapCount % 2000 == 0) {
-                LOGI("⏳ Đang đợi dữ liệu ISOC từ USB Capture (Empty reap count: %d)...", emptyReapCount);
+                LOGI("⏳ Đang đợi dữ liệu ISOC từ USB Capture (Empty reap count: %d, errno=%d)...", emptyReapCount, errno);
             }
             std::this_thread::sleep_for(std::chrono::microseconds(500));
         }

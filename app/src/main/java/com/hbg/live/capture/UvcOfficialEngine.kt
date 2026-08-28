@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Chuẩn hóa quy trình UVC Probe/Commit & Kích hoạt Alternate Setting 1 cho MS2109 USB Capture Card.
+ * Tự động chọn đúng packetSize gốc (1024) từ UsbEndpoint và kích hoạt Alternate Setting 1 cho MS2109 USB Capture Card.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -117,17 +117,16 @@ class UvcOfficialEngine(
                 // 1. Gửi UVC Probe & Commit Control Transfer TRƯỚC để chốt định dạng MJPEG
                 performFullProbeCommitDebug(connection, targetInterface.id)
 
-                // 2. Dò tìm Endpoint ISOC/Bulk khả dụng
+                // 2. Dò tìm Endpoint ISOC/Bulk khả dụng và lấy packetSize thực tế
                 var epAddr = 0x83
-                var maxPacketSize = 3072
+                var maxPacketSize = 1024
 
                 for (i in 0 until targetInterface.endpointCount) {
                     val ep = targetInterface.getEndpoint(i)
                     if (ep.direction == UsbConstants.USB_DIR_IN) {
                         epAddr = ep.address
-                        val baseSize = ep.maxPacketSize
-                        maxPacketSize = if (baseSize <= 1024) 3072 else baseSize
-                        logDebug("🔍 Tìm thấy USB Endpoint: Address = 0x${Integer.toHexString(epAddr)}, Base PacketSize = $baseSize -> ISOC PacketSize = $maxPacketSize")
+                        maxPacketSize = ep.maxPacketSize
+                        logDebug("🔍 Tìm thấy USB Endpoint: Address = 0x${Integer.toHexString(epAddr)}, Base PacketSize = $maxPacketSize")
                         break
                     }
                 }
@@ -248,7 +247,7 @@ class UvcOfficialEngine(
                 0x00, 0x00, // wCompWindowSize
                 0x00, 0x00, // wDelay
                 0x00, 0x80.toByte(), 0x8D.toByte(), 0x00, // dwMaxVideoFrameSize
-                0x00, 0x0C, 0x00, 0x00  // dwMaxPayloadTransferSize (3072)
+                0x00, 0x04, 0x00, 0x00  // dwMaxPayloadTransferSize (1024)
             )
 
             // SET_CUR Probe (VS_PROBE_CONTROL = 0x0100)

@@ -80,6 +80,42 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
     }
 }
 
+static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
+    size_t sz = ctx->frameBuffer.size();
+    if (sz < 10000) return;
+
+    // 1. Tìm vị trí mốc SOI (0xFF, 0xD8) chuẩn xác
+    size_t soiPos = 0;
+    bool foundSoi = false;
+    for (size_t i = 0; i + 1 < sz; ++i) {
+        if (ctx->frameBuffer[i] == 0xFF && ctx->frameBuffer[i + 1] == 0xD8) {
+            soiPos = i;
+            foundSoi = true;
+            break;
+        }
+    }
+    if (!foundSoi) return;
+
+    // 2. Tìm vị trí mốc EOI (0xFF, 0xD9) chuẩn xác ở cuối khung ảnh
+    size_t eoiPos = 0;
+    bool foundEoi = false;
+    for (size_t i = sz; i >= soiPos + 2; --i) {
+        if (ctx->frameBuffer[i - 2] == 0xFF && ctx->frameBuffer[i - 1] == 0xD9) {
+            eoiPos = i;
+            foundEoi = true;
+            break;
+        }
+    }
+    if (!foundEoi) return;
+
+    size_t jpegLen = eoiPos - soiPos;
+    if (jpegLen >= 10000) {
+        deliverFrame(ctx, ctx->frameBuffer.data() + soiPos, jpegLen);
+        ctx->frameCount++;
+        ctx->fpsFrames++;
+    }
+}
+
 static void workerLoop(UvcEngineContext* ctx) {
     int packetSize = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 1024;
     int targetEp = (ctx->epAddr != 0) ? ctx->epAddr : 0x83;
@@ -174,8 +210,10 @@ static void workerLoop(UvcEngineContext* ctx) {
                 if (desc.actual_length > 2) {
                     int offset = p * packetSize;
                     uint8_t headerLen = buffer[offset];
+                    uint8_t headerFlags = buffer[offset + 1];
 
-                    if (headerLen >= 2 && headerLen <= desc.actual_length) {
+                    // Bóc tách UVC Payload Header chuẩn UVC 1.1 (2 <= headerLen <= 12 và không có cờ lỗi ERR 0x40)
+                    if (headerLen >= 2 && headerLen <= 12 && headerLen <= desc.actual_length && (headerFlags & 0x40) == 0) {
                         const uint8_t* payload = buffer + offset + headerLen;
                         size_t payloadLen = desc.actual_length - headerLen;
 
@@ -184,16 +222,7 @@ static void workerLoop(UvcEngineContext* ctx) {
 
                             // Nhận diện mốc SOI (0xFF, 0xD8) -> Khởi đầu khung hình mới
                             if (payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
-                                size_t currentSize = ctx->frameBuffer.size();
-                                // Nếu đệm cũ đã nạp đủ kích thước (>10KB) và kết thúc chuẩn bằng EOI (0xFF, 0xD9)
-                                if (currentSize >= 10000 &&
-                                    ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8 &&
-                                    ctx->frameBuffer[currentSize - 2] == 0xFF && ctx->frameBuffer[currentSize - 1] == 0xD9) {
-
-                                    deliverFrame(ctx, ctx->frameBuffer.data(), currentSize);
-                                    ctx->frameCount++;
-                                    ctx->fpsFrames++;
-                                }
+                                extractAndDeliverJpeg(ctx);
                                 ctx->frameBuffer.clear();
                             }
 
@@ -201,15 +230,12 @@ static void workerLoop(UvcEngineContext* ctx) {
                                 ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                             }
 
-                            // Kiểm tra mốc kết thúc chuẩn EOI (0xFF, 0xD9) đúng ở 2 bytes cuối cùng của khung ảnh
+                            // Kiểm tra xem đã nạp đủ mốc EOI (0xFF, 0xD9) ở cuối khung ảnh chưa
                             size_t bufSize = ctx->frameBuffer.size();
                             if (bufSize >= 10000 &&
-                                ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8 &&
                                 ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
 
-                                deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
-                                ctx->frameCount++;
-                                ctx->fpsFrames++;
+                                extractAndDeliverJpeg(ctx);
                                 ctx->frameBuffer.clear();
                             }
                         }

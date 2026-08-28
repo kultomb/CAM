@@ -1,8 +1,8 @@
-# AGENTS.md - Quy Tắc Vàng Kỹ Thuật Nhận Camera USB (UVC) Trên Android 14/15 (16KB Page Alignment)
+# AGENTS.md - Quy Tắc Vàng Kỹ Thuật & Kiến Trúc Studio Livestream Chuyên Nghiệp (Android 14/15)
 
 > [!IMPORTANT]
 > **TÀI LIỆU QUY TẮC CỐT LÕI CỦA DỰ ÁN (MANDATORY PROJECT RULES)**
-> File này chứa toàn bộ kiến thức thực nghiệm thu được sau khi giải quyết thành công bài toán nhận dạng USB Capture Card (Sony A73 / MS2109) trên Android 14/15. Khi chỉnh sửa mã nguồn sau này, BẤT KỲ NGUYÊN TẮC NÀO TRONG ĐÂY CŨNG KHÔNG ĐƯỢC PHÉP VI PHẠM ĐỂ TRÁNH LÀM HỎNG TÍNH NĂNG NHẬN CAMERA.
+> File này chứa toàn bộ quy tắc kỹ thuật và phác đồ kiến trúc tối ưu thu được sau khi hoàn thiện nhận dạng USB Video Capture (Sony A73 / MS2109) trên Android 14/15. Khi chỉnh sửa hoặc nâng cấp mã nguồn sau này, BẤT KỲ NGUYÊN TẮC NÀO TRONG ĐÂY CỦNG KHÔNG ĐƯỢC PHÉP VI PHẠM ĐỂ BẢO ĐẢM ỨNG DỤNG MÁT MÁY, KHÔNG LAG, KHÔNG CRASH VÀ KHÔNG RỚT LUỒNG.
 
 ---
 
@@ -66,10 +66,52 @@
 
 ---
 
-## 7. Cơ Chế Bỏ Qua Khung Hình Ứ Động (Zero-Lag Frame Dropping) & Full Color 32-bit
+## 7. Tách Độc Lập Đường Xử Lý Preview & Streaming Pipeline (Zero-Copy & Mát Máy)
 
-* **Vấn đề**: Đẩy 30–60 FPS liên tục lên Canvas nếu không xử lý kịp sẽ làm dâng tràn hàng chờ của Android WindowManager, khiến màn hình bị giật lag và tự động đen màn sau vài giây.
+* **Nguyên lý Đỉnh Cao**: Tuyệt đối **KHÔNG** dùng pipeline tạo rác GC: `MJPEG -> Bitmap ARGB_8888 -> Canvas -> Bitmap -> MediaCodec`. Pipeline này ngốn 500MB/s RAM, gây khựng GC stutter và khiến điện thoại nóng 48°C chỉ sau 5 phút.
+* **Sơ đồ Đường Xử Lý Tách Độc Lập**:
+  ```text
+                      MJPEG (C++ UVC Engine)
+                                │
+                        ┌───────┴───────┐
+                        ▼               ▼
+                   Preview          Streaming
+                        │               │
+                        ▼               ▼
+                   SurfaceView      MediaCodec
+                   (ANativeWindow)  H.264 (Surface Input)
+  ```
 * **Quy tắc**:
-  * Sử dụng `AtomicBoolean` frame dropping (`isRendering.compareAndSet(false, true)`) trong [`UvcOfficialEngine.kt`](file:///c:/Users/CMD/Desktop/LIVE%20CAMERA/app/src/main/java/com/hbg/live/capture/UvcOfficialEngine.kt). Nếu UI đang bận vẽ, bỏ qua khung hình mới trong **0.0001ms**.
-  * Sử dụng giải mã `Bitmap.Config.ARGB_8888` để giữ 100% màu sắc và độ nét thực tế của cảm biến Sony A73.
-  * Đẩy livestream qua MediaCodec H.264 Encoder `AVCProfileHigh` tại Bitrate 4.5-6.0 Mbps, GOP 1s chuẩn YouTube Live / Facebook Live.
+  * Luồng USB C++ chỉ làm nhiệm vụ: `READ -> VALIDATE -> ASSEMBLE -> QUEUE`. Không bao giờ giải mã JPEG trong USB Reader thread.
+  * Preview hiển thị qua `ANativeWindow` hoặc SurfaceDirect Zero-Copy.
+  * Livestream mã hóa qua `MediaCodec` H.264 Hardware Encoder (`COLOR_FormatSurface` / Direct Surface Feed).
+
+---
+
+## 8. Luồng USB Thread Cách Ly Hoàn Toàn Với Mạng (Network Queue Isolation)
+
+* **Bài học**: Khi tín hiệu mạng 5G / WiFi bị suy giảm hoặc lag, bộ đẩy RTMP/SRT bị nghẽn. Nếu không cách ly, bộ nghẽn mạng sẽ kéo chậm luồng C++ USB Reader, làm mất gói URB Isochronous và gây sọc hình / rớt kết nối USB.
+* **Quy tắc**:
+  * Hàng chờ mạng (`Network Queue`) và luồng mã hóa (`Encoder Queue`) phải độc lập 100% với luồng USB.
+  * Nếu mạng chậm, ứng dụng chỉ bỏ qua (drop) gói tin ở tầng Streaming Network Queue, **tuyệt đối không bao giờ làm ngưng trệ luồng C++ USB Isochronous Reader**.
+
+---
+
+## 9. Bộ Kiểm Soát Nhiệt Độ Thích Ứng (Thermal & Adaptive Bitrate Controller)
+
+* **Chiến lược giữ điện thoại luôn mát (32°C - 36°C)**:
+  * **Bình thường (< 38°C)**: Cấu hình 1080p 60FPS @ Bitrate 6.0 Mbps.
+  * **Ấm máy (38°C - 42°C)**: Giữ 1080p 60FPS, điều chỉnh Bitrate xuống 4.5 Mbps.
+  * **Nóng máy (42°C - 45°C)**: Chuyển 1080p 30FPS @ Bitrate 3.5 Mbps (giảm 50% tải GPU/CPU).
+  * **Rất nóng (> 45°C)**: Chuyển 720p 30FPS @ Bitrate 2.5 Mbps và hiện Toast cảnh báo hạ nhiệt.
+* **MediaCodec Bitrate Mode**: Sử dụng `MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR` (Variable Bitrate) kết hợp `AVCProfileHigh` để tự động giảm dung lượng ở phân cảnh ít chuyển động.
+
+---
+
+## 10. USB Watchdog & Cơ Chế Tự Động Phục Hồi (Auto Reconnect Recovery)
+
+* **Nguyên tắc An Toàn**: Không để bất kỳ lỗi USB phần cứng hay rút cáp đột ngột làm ứng dụng bị crash.
+* **Cơ chế Watchdog**:
+  * Giám sát nếu trong 1.0 giây không nhận được gói tin MJPEG hoặc FPS = 0:
+    1. Tự động ngắt luồng URB cũ qua `USBDEVFS_DISCARDURB`.
+    2. Tự động tái nạp Data Plane C++ trong 100ms mà **không ngắt luồng RTMP/SRT** phát trực tiếp.

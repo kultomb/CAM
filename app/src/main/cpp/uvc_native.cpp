@@ -202,7 +202,7 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(
     env->GetJavaVM(&ctx->jvm);
     ctx->bridgeObject = env->NewGlobalRef(thiz);
 
-    jclass cls = env Gerard = env->GetObjectClass(thiz);
+    jclass cls = env->GetObjectClass(thiz);
     ctx->onFrameMethod = env->GetMethodID(cls, "onNativeFrame", "([B)V");
 
     ctx->running = true;

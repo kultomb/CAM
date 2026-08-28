@@ -17,11 +17,12 @@ import android.util.Log
 import android.view.SurfaceHolder
 import com.hbg.live.stream.H264Encoder
 import com.hbg.live.util.StudioLogger
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Đảm bảo an toàn bộ đệm bộ nhớ Bitmap (xóa bỏ bitmap.recycle để tránh race condition) và tính toán tỷ lệ Fit-Center không bị nháy.
+ * UVC Precision EOI Render Engine - Nạp Khung Hình Bất Đồng Bộ Qua Render Executor Dedicated Thread.
+ * Tách biệt 100% luồng đọc USB ISOC và luồng Decode/Render SurfaceView giúp loại bỏ triệt để nghẽn luồng và nháy màn hình.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -35,6 +36,7 @@ class UvcOfficialEngine(
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var renderExecutor = Executors.newSingleThreadExecutor()
 
     private var usbConnection: UsbDeviceConnection? = null
     private var usbInterface: UsbInterface? = null
@@ -65,6 +67,10 @@ class UvcOfficialEngine(
     fun startStream(device: UsbDevice, holder: SurfaceHolder) {
         stopStream()
         clearSurfaceWithLoading(holder)
+
+        if (renderExecutor.isShutdown || renderExecutor.isTerminated) {
+            renderExecutor = Executors.newSingleThreadExecutor()
+        }
 
         Thread {
             logDebug("=== [KHỞI ĐỘNG UVC PRECISION EOI RENDER ENGINE] ===")
@@ -163,7 +169,20 @@ class UvcOfficialEngine(
 
         nativeBridge = UvcNativeBridge(object : UvcNativeBridge.Listener {
             override fun onNativeFrame(jpeg: ByteArray) {
-                renderJpeg(jpeg, holder)
+                // Tách biệt luồng nhận USB bất đồng bộ: Nếu luồng decode đang bận, bỏ qua khung để luồng USB không bao giờ bị nghẽn
+                if (!isRendering.compareAndSet(false, true)) {
+                    return
+                }
+
+                renderExecutor.execute {
+                    try {
+                        renderJpegInternal(jpeg, holder)
+                    } catch (e: Throwable) {
+                        logError("Lỗi renderExecutor", e)
+                    } finally {
+                        isRendering.set(false)
+                    }
+                }
             }
 
             override fun onNativeError(message: String) {
@@ -180,11 +199,7 @@ class UvcOfficialEngine(
         logDebug("🟢 UVC PRECISION RENDER ENGINE STARTED SUCCESSFULLY!")
     }
 
-    private fun renderJpeg(jpeg: ByteArray, holder: SurfaceHolder) {
-        if (!isRendering.compareAndSet(false, true)) {
-            return
-        }
-
+    private fun renderJpegInternal(jpeg: ByteArray, holder: SurfaceHolder) {
         try {
             val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
             if (bitmap != null) {
@@ -216,12 +231,22 @@ class UvcOfficialEngine(
                         }
                     }
                 }
-                // Không gọi bitmap.recycle() thủ công để tránh race condition với luồng H264Encoder!
+            }
+
+            frameCount++
+            if (fpsStartTime == 0L) {
+                fpsStartTime = System.currentTimeMillis()
+            } else {
+                val elapsed = System.currentTimeMillis() - fpsStartTime
+                if (elapsed >= 1000) {
+                    val fps = (frameCount * 1000f) / elapsed
+                    mainHandler.post { listener.onFrameFps(fps) }
+                    frameCount = 0
+                    fpsStartTime = System.currentTimeMillis()
+                }
             }
         } catch (e: Throwable) {
-            logError("Lỗi renderJpeg", e)
-        } finally {
-            isRendering.set(false)
+            logError("Lỗi renderJpegInternal", e)
         }
     }
 
@@ -315,6 +340,10 @@ class UvcOfficialEngine(
         try {
             usbInterface?.let { usbConnection?.releaseInterface(it) }
             usbConnection?.close()
+        } catch (e: Throwable) {}
+
+        try {
+            renderExecutor.shutdownNow()
         } catch (e: Throwable) {}
 
         usbInterface = null

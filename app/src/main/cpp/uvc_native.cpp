@@ -27,6 +27,7 @@ static constexpr size_t MAX_FRAME_SIZE = 4 * 1024 * 1024;
 
 struct UvcEngineContext {
     int fd = -1;
+    int ifaceId = 1;
     int epAddr = 0x83;
     int maxPacketSize = 3072;
     int altSetting = 1;
@@ -82,17 +83,17 @@ static void workerLoop(UvcEngineContext* ctx) {
     int packetSize = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 3072;
     int targetEp = (ctx->epAddr != 0) ? ctx->epAddr : 0x83;
     int altSetting = (ctx->altSetting > 0) ? ctx->altSetting : 1;
+    int ifaceId = ctx->ifaceId;
 
     int urbBufferSize = ISO_PACKETS * packetSize;
 
-    LOGI("🟢 16KB UVC Direct Render Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
-         ctx->fd, targetEp, packetSize, altSetting);
+    LOGI("🟢 16KB UVC Direct Render Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+         ctx->fd, ifaceId, targetEp, packetSize, altSetting);
 
-    int ifnum = 1;
-    ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifnum);
+    ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifaceId);
 
     struct usbdevfs_setinterface setif;
-    setif.interface = 1;
+    setif.interface = ifaceId;
     setif.altsetting = altSetting;
     ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
 
@@ -181,7 +182,7 @@ static void workerLoop(UvcEngineContext* ctx) {
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(
-    JNIEnv* env, jobject thiz, jint fd, jint epAddr, jint maxPacketSize, jint altSetting, jobject surface) {
+    JNIEnv* env, jobject thiz, jint fd, jint ifaceId, jint epAddr, jint maxPacketSize, jint altSetting, jobject surface) {
 
     std::lock_guard<std::mutex> lock(g_ctxMutex);
     if (g_ctx != nullptr) {
@@ -196,6 +197,7 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(
 
     auto ctx = new UvcEngineContext();
     ctx->fd = fd;
+    ctx->ifaceId = ifaceId;
     ctx->epAddr = epAddr;
     ctx->maxPacketSize = maxPacketSize;
     ctx->altSetting = altSetting;
@@ -209,8 +211,8 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(
     ctx->workerThread = std::thread(workerLoop, ctx);
 
     g_ctx = ctx;
-    LOGI("🟢 Native StartEngine thành công (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
-         fd, epAddr, maxPacketSize, altSetting);
+    LOGI("🟢 Native StartEngine thành công (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+         fd, ifaceId, epAddr, maxPacketSize, altSetting);
     return JNI_TRUE;
 }
 

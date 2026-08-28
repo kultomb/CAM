@@ -1,89 +1,80 @@
 package com.hbg.live.capture
 
-import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.ImageFormat
 import android.graphics.PixelFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CaptureRequest
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Handler
 import android.os.HandlerThread
-import android.os.Looper
 import android.util.Log
+import android.util.Size
 import android.view.Surface
 import android.view.SurfaceHolder
 import com.hbg.live.stream.H264Encoder
 import com.hbg.live.util.StudioLogger
 
 /**
- * Engine Quản lý Nguồn Video Tập Trung - Hỗ Trợ Đầy Đủ Multi-Camera API & Chuyển Ống Kính Vật Lý 0.5x Ultra-Wide, 1x Main, 2x, 3x, 5x Telephoto.
+ * Điều phối Nguồn Video đa năng (CAM HDMI USB Capture / Camera Sau Multi-Lens / Camera Trước).
  */
 class CameraSourceManager(
     private val context: Context,
     private val listener: CameraSourceListener
 ) : UvcOfficialEngine.UvcOfficialListener {
 
-    data class BackLensOption(
-        val label: String,
-        val zoomRatio: Float,
-        val physicalId: String? = null
-    )
-
-    enum class VideoSourceMode(var displayName: String) {
-        HDMI_CAPTURE("CAM HDMI"),
-        PHONE_BACK("Camera Sau Điện Thoại"),
-        PHONE_FRONT("Camera Trước Điện Thoại")
-    }
-
     interface CameraSourceListener {
-        fun onSourceChanged(mode: VideoSourceMode, description: String)
+        fun onSourceChanged(mode: VideoSourceMode, displayName: String)
         fun onFrameReceived(fps: Float)
         fun onError(errorMsg: String)
     }
 
+    enum class VideoSourceMode(var displayName: String) {
+        HDMI_CAPTURE("CAM HDMI"),
+        PHONE_BACK("Camera Sau (0.5x, 1x, 3x)"),
+        PHONE_FRONT("Camera Trước")
+    }
+
+    data class BackLensOption(
+        val name: String,
+        val zoomRatio: Float,
+        val physicalCameraId: String? = null
+    )
+
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
-    var currentSourceMode: VideoSourceMode = VideoSourceMode.PHONE_BACK
-        private set
-    var activeCameraId: String? = null
-        private set
-    var currentZoomRatio: Float = 1.0f
-        private set
-
-    // Camera2 API Variables (Cam điện thoại)
-    private var cameraDevice: CameraDevice? = null
-    private var captureSession: CameraCaptureSession? = null
-    private var backgroundThread: HandlerThread? = null
-    private var backgroundHandler: Handler? = null
-
-    // Engine UVC Nguồn Mở Chuẩn Quốc Tế
-    private var uvcOfficialEngine: UvcOfficialEngine = UvcOfficialEngine(context, this)
+    val uvcOfficialEngine = UvcOfficialEngine(context, this)
 
     var h264Encoder: H264Encoder? = null
         set(value) {
             field = value
             uvcOfficialEngine.h264Encoder = value
-            activeSurfaceHolder?.let { holder ->
-                if (currentSourceMode == VideoSourceMode.PHONE_BACK || currentSourceMode == VideoSourceMode.PHONE_FRONT) {
-                    cameraDevice?.let { camera ->
-                        createCameraPreviewSession(camera, holder)
-                    }
-                }
-            }
         }
 
-    fun getUvcEngine(): UvcOfficialEngine = uvcOfficialEngine
-
-    private var isOpening = false
+    private var cameraDevice: CameraDevice? = null
+    private var captureSession: CameraCaptureSession? = null
     private var activeSurfaceHolder: SurfaceHolder? = null
+
+    private var backgroundThread: HandlerThread? = null
+    private var backgroundHandler: Handler? = null
+
+    var currentSourceMode = VideoSourceMode.PHONE_BACK
+        private set
+
+    var currentZoomRatio = 1.0f
+        private set
+
+    var activePhysicalCameraId: String? = null
+        private set
 
     companion object {
         private const val TAG = "CameraSourceManager"
-        const val ACTION_USB_PERMISSION = "com.hbg.live.ACTION_USB_PERMISSION"
+        const val ACTION_USB_PERMISSION = "com.hbg.live.USB_PERMISSION"
     }
 
     fun getBackLensOptions(): List<BackLensOption> {
@@ -112,7 +103,8 @@ class CameraSourceManager(
         for (device in deviceList.values) {
             for (i in 0 until device.interfaceCount) {
                 val iface = device.getInterface(i)
-                if (iface.interfaceClass == 14 && iface.interfaceSubclass == 2) {
+                if ((iface.interfaceClass == 14 && iface.interfaceSubclass == 2) ||
+                    iface.interfaceClass == 14 || iface.interfaceClass == 255 || device.deviceClass == 239) {
                     val vidHex = Integer.toHexString(device.vendorId)
                     val pidHex = Integer.toHexString(device.productId)
                     val dynamicName = if (usbManager.hasPermission(device)) {
@@ -176,20 +168,16 @@ class CameraSourceManager(
         } catch (e: Throwable) {}
     }
 
-    @SuppressLint("MissingPermission")
     private fun openPhoneCamera(facing: Int, holder: SurfaceHolder, targetCameraId: String? = null, zoomRatio: Float = 1.0f) {
-        if (isOpening) return
-        isOpening = true
-
         startBackgroundThread()
-
         try {
             var selectedId: String? = targetCameraId
+
             if (selectedId == null) {
-                val ids = cameraManager.cameraIdList
-                for (id in ids) {
+                for (id in cameraManager.cameraIdList) {
                     val characteristics = cameraManager.getCameraCharacteristics(id)
-                    if (characteristics.get(CameraCharacteristics.LENS_FACING) == facing) {
+                    val lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                    if (lensFacing == facing) {
                         selectedId = id
                         break
                     }
@@ -197,81 +185,75 @@ class CameraSourceManager(
             }
 
             if (selectedId == null) {
-                isOpening = false
-                listener.onError("Không tìm thấy Camera Điện thoại")
+                listener.onError("Không tìm thấy Camera phù hợp!")
                 return
             }
 
-            activeCameraId = selectedId
-            val facingLabel = if (facing == CameraCharacteristics.LENS_FACING_BACK) "Cam Sau (${zoomRatio}x)" else "Cam Trước"
+            activePhysicalCameraId = selectedId
+            StudioLogger.log(TAG, "Mở Camera2 API với ID [$selectedId] (Zoom ${zoomRatio}x)")
 
-            StudioLogger.log(TAG, "Mở Camera Điện Thoại '$facingLabel' ID $selectedId...")
+            try {
+                cameraManager.openCamera(selectedId, object : CameraDevice.StateCallback() {
+                    override fun onOpened(camera: CameraDevice) {
+                        cameraDevice = camera
+                        createCameraPreviewSession(camera, holder, zoomRatio)
+                        val label = if (facing == CameraCharacteristics.LENS_FACING_BACK) {
+                            "Camera Sau (${zoomRatio}x)"
+                        } else {
+                            "Camera Trước"
+                        }
+                        listener.onSourceChanged(currentSourceMode, label)
+                    }
 
-            cameraManager.openCamera(selectedId, object : CameraDevice.StateCallback() {
-                override fun onOpened(camera: CameraDevice) {
-                    isOpening = false
-                    cameraDevice = camera
-                    createCameraPreviewSession(camera, holder, zoomRatio)
-                    val modeName = if (facing == CameraCharacteristics.LENS_FACING_BACK) VideoSourceMode.PHONE_BACK else VideoSourceMode.PHONE_FRONT
-                    listener.onSourceChanged(modeName, facingLabel)
-                    StudioLogger.log(TAG, "► ĐÃ HIỂN THỊ THÀNH CÔNG PREVIEW $facingLabel ID '$selectedId'!")
-                }
+                    override fun onDisconnected(camera: CameraDevice) {
+                        camera.close()
+                        cameraDevice = null
+                    }
 
-                override fun onDisconnected(camera: CameraDevice) {
-                    isOpening = false
-                    camera.close()
-                    cameraDevice = null
-                }
-
-                override fun onError(camera: CameraDevice, error: Int) {
-                    isOpening = false
-                    camera.close()
-                    cameraDevice = null
-                    listener.onError("Lỗi mở Camera ID $selectedId: $error")
-                }
-            }, backgroundHandler)
-
+                    override fun onError(camera: CameraDevice, error: Int) {
+                        camera.close()
+                        cameraDevice = null
+                        listener.onError("Lỗi mở Camera2 (mã lỗi: $error)")
+                    }
+                }, backgroundHandler)
+            } catch (e: SecurityException) {
+                listener.onError("Chưa được cấp quyền Camera!")
+            }
         } catch (e: Throwable) {
-            isOpening = false
-            StudioLogger.log(TAG, "Lỗi openPhoneCamera", e)
-            listener.onError("Lỗi Camera2: ${e.message}")
+            StudioLogger.log(TAG, "Lỗi mở Phone Camera", e)
+            listener.onError("Không thể mở Camera: ${e.message}")
         }
     }
 
-    private fun createCameraPreviewSession(camera: CameraDevice, holder: SurfaceHolder, zoomRatio: Float = currentZoomRatio) {
+    private fun createCameraPreviewSession(camera: CameraDevice, holder: SurfaceHolder, zoomRatio: Float) {
         try {
-            val surface = holder.surface
-            if (surface == null || !surface.isValid) {
-                return
-            }
+            val surfaces = ArrayList<Surface>()
+            surfaces.add(holder.surface)
 
-            val targets = mutableListOf<Surface>(surface)
             val encoderSurface = h264Encoder?.getInputSurface()
             if (encoderSurface != null && encoderSurface.isValid) {
-                targets.add(encoderSurface)
+                surfaces.add(encoderSurface)
             }
 
-            val previewRequestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            for (t in targets) {
-                previewRequestBuilder.addTarget(t)
+            val previewRequestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            for (surface in surfaces) {
+                previewRequestBuilder.addTarget(surface)
             }
 
-            // Thiết lập tỷ lệ Zoom Ratio / Ống kính vật lý (0.5x Ultra-Wide, 1.0x Main, 3.0x Telephoto)
             if (android.os.Build.VERSION.SDK_INT >= 30) {
                 try {
-                    previewRequestBuilder.set(android.hardware.camera2.CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio)
+                    previewRequestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio)
                 } catch (e: Throwable) {}
             }
 
-            @Suppress("DEPRECATION")
-            camera.createCaptureSession(targets, object : CameraCaptureSession.StateCallback() {
+            camera.createCaptureSession(surfaces, object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     if (cameraDevice == null) return
                     captureSession = session
                     try {
                         previewRequestBuilder.set(
-                            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE,
-                            android.hardware.camera2.CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
+                            CaptureRequest.CONTROL_AF_MODE,
+                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO
                         )
                         session.setRepeatingRequest(previewRequestBuilder.build(), null, backgroundHandler)
                     } catch (e: Throwable) {
@@ -318,8 +300,6 @@ class CameraSourceManager(
             cameraDevice?.close()
             cameraDevice = null
         } catch (e: Throwable) {}
-
-        stopBackgroundThread()
     }
 
     override fun onFrameFps(fps: Float) {
@@ -328,5 +308,11 @@ class CameraSourceManager(
 
     override fun onError(errorMsg: String) {
         listener.onError(errorMsg)
+    }
+
+    fun release() {
+        stopAllSources()
+        stopBackgroundThread()
+        uvcOfficialEngine.release()
     }
 }

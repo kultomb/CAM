@@ -36,13 +36,13 @@ class UvcNativeBridge(
         }
     }
 
-    private external fun nativeStartEngine(fd: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Boolean
+    private external fun nativeStartEngine(fd: Int, ifaceId: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Boolean
     private external fun nativeStopEngine()
 
-    fun start(fd: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Boolean {
-        Log.d(TAG, "nativeStartEngine(fd=$fd, epAddr=0x${Integer.toHexString(epAddr)}, maxPacketSize=$maxPacketSize, alt=$altSetting)")
+    fun start(fd: Int, ifaceId: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Boolean {
+        Log.d(TAG, "nativeStartEngine(fd=$fd, iface=$ifaceId, epAddr=0x${Integer.toHexString(epAddr)}, maxPacketSize=$maxPacketSize, alt=$altSetting)")
         val result = try {
-            nativeStartEngine(fd, epAddr, maxPacketSize, altSetting, surface)
+            nativeStartEngine(fd, ifaceId, epAddr, maxPacketSize, altSetting, surface)
         } catch (e: Throwable) {
             Log.e(TAG, "Lỗi nativeStartEngine", e)
             false

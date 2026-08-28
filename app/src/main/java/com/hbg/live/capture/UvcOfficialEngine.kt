@@ -147,7 +147,7 @@ class UvcOfficialEngine(
                 usbInterface = targetInterface
                 isStreaming = true
 
-                startNativeIso(connection, epAddr, maxPacketSize, altSetting, holder)
+                startNativeIso(connection, targetInterface.id, epAddr, maxPacketSize, altSetting, holder)
 
             } catch (e: Throwable) {
                 logError("Lỗi UVC start failed", e)
@@ -159,7 +159,7 @@ class UvcOfficialEngine(
         }
     }
 
-    private fun startNativeIso(connection: UsbDeviceConnection, epAddr: Int, maxPacketSize: Int, altSetting: Int, holder: SurfaceHolder) {
+    private fun startNativeIso(connection: UsbDeviceConnection, ifaceId: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, holder: SurfaceHolder) {
         val fd = connection.fileDescriptor
 
         nativeBridge = UvcNativeBridge(object : UvcNativeBridge.Listener {
@@ -172,7 +172,7 @@ class UvcOfficialEngine(
             }
         })
 
-        val started = nativeBridge!!.start(fd, epAddr, maxPacketSize, altSetting, holder.surface)
+        val started = nativeBridge!!.start(fd, ifaceId, epAddr, maxPacketSize, altSetting, holder.surface)
         if (!started) {
             listener.onError("Không khởi động được ISO Native Engine")
             return

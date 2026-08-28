@@ -1,0 +1,463 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_dark"
+    android:padding="12dp">
+
+    <!-- HDMI Preview View (Main Surface) - Maximize Full Screen Space -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/previewCard"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:layout_marginEnd="8dp"
+        app:cardBackgroundColor="#000000"
+        app:cardCornerRadius="8dp"
+        app:cardElevation="4dp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toStartOf="@+id/controlPanel"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <SurfaceView
+                android:id="@+id/surfacePreview"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <!-- No Signal / Placeholder Overlay -->
+            <LinearLayout
+                android:id="@+id/layoutNoSignal"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="64dp"
+                    android:layout_height="64dp"
+                    android:src="@android:drawable/ic_menu_camera"
+                    app:tint="@color/text_dim" />
+
+                <TextView
+                    android:id="@+id/tvSignalStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="12dp"
+                    android:text="CHƯA KẾT NỐI CAPTURE CARD USB"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Cắm HDMI Capture Card qua USB-C để tự động nhận tín hiệu Sony A73"
+                    android:textColor="@color/text_dim"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </FrameLayout>
+    </androidx.cardview.widget.CardView>
+
+    <!-- Side Control Panel (Live Dashboard) với Nút ⚙️ Cài đặt gọn gàng -->
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/controlPanel"
+        android:layout_width="280dp"
+        android:layout_height="0dp"
+        android:background="@color/card_bg"
+        android:fillViewport="true"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <!-- Compact Header Row (Status & Settings Button) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvStatusBadge"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@color/bg_dark"
+                    android:paddingHorizontal="8dp"
+                    android:paddingVertical="4dp"
+                    android:text="🟢 READY"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSettings"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="wrap_content"
+                    android:layout_height="32dp"
+                    android:layout_marginStart="4dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:paddingHorizontal="8dp"
+                    android:text="⚙️ CÀI ĐẶT"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="10sp"
+                    app:strokeColor="@color/card_stroke" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="NGUỒN VIDEO"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <!-- Video Source Selection Chips -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSourceHdmi"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="Sony A73"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/accent_blue" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSourceBackCam"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="Cam Sau"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/card_stroke" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnSourceFrontCam"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="Cam Trước"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/card_stroke" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="NGUỒN ÂM THANH"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <!-- Audio Source Selection Chips -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnAudioHdmi"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="HDMI Audio"
+                    android:textColor="@color/accent_green"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/accent_green" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnAudioMic"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="Mic Điện Thoại"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/card_stroke" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="THÔNG SỐ MẠNG &amp; LUỒNG"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <!-- Stats Grid -->
+            <GridLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:columnCount="2"
+                android:rowCount="2">
+
+                <!-- Bitrate Card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_margin="4dp"
+                    android:background="@color/bg_dark"
+                    android:orientation="vertical"
+                    android:padding="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="BITRATE"
+                        android:textColor="@color/text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvBitrate"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="0.0 Mbps"
+                        android:textColor="@color/accent_blue"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Upload Speed Card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_margin="4dp"
+                    android:background="@color/bg_dark"
+                    android:orientation="vertical"
+                    android:padding="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="UPLOAD 5G"
+                        android:textColor="@color/text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvUploadSpeed"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="0.0 Mbps"
+                        android:textColor="@color/accent_green"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- FPS Card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_margin="4dp"
+                    android:background="@color/bg_dark"
+                    android:orientation="vertical"
+                    android:padding="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="FPS"
+                        android:textColor="@color/text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvFps"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="0.0"
+                        android:textColor="@color/text_primary"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+
+                <!-- Dropped Frames Card -->
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_margin="4dp"
+                    android:background="@color/bg_dark"
+                    android:orientation="vertical"
+                    android:padding="8dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="DROPPED"
+                        android:textColor="@color/text_dim"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvDroppedFrames"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="0.0%"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </GridLayout>
+
+            <!-- Audio VU Meter Section -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="ÂM THANH VU METER"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/vuMeterBar"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="12dp"
+                android:layout_marginTop="4dp"
+                android:max="100"
+                android:progress="0"
+                android:progressDrawable="@android:drawable/progress_horizontal" />
+
+            <!-- RTMP Settings Inputs -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="NỀN TẢNG LIVESTREAM"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <!-- Preset Buttons (YouTube / Facebook / Custom) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnPresetYoutube"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="YouTube"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="10sp"
+                    app:strokeColor="@color/accent_blue" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnPresetFacebook"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="32dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="4dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="Facebook"
+                    android:textColor="@color/accent_green"
+                    android:textSize="10sp"
+                    app:strokeColor="@color/accent_green" />
+            </LinearLayout>
+
+            <EditText
+                android:id="@+id/etRtmpUrl"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="4dp"
+                android:background="@color/bg_dark"
+                android:hint="rtmp://a.rtmp.youtube.com/live2"
+                android:paddingHorizontal="8dp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_dim"
+                android:textSize="11sp" />
+
+            <EditText
+                android:id="@+id/etStreamKey"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="4dp"
+                android:background="@color/bg_dark"
+                android:hint="Stream Key (ví dụ: xxxx-xxxx-xxxx-xxxx)"
+                android:inputType="textPassword"
+                android:paddingHorizontal="8dp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_dim"
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="12dp" />
+
+            <!-- Action Button: START / STOP LIVE -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnToggleLive"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:backgroundTint="@color/live_red"
+                android:text="🔴  START LIVE"
+                android:textColor="@color/white"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                app:cornerRadius="6dp" />
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
+
+</androidx.constraintlayout.widget.ConstraintLayout>

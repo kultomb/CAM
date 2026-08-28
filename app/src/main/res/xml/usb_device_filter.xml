@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Nhận diện thiết bị USB thuộc Video Class (UVC) -->
+    <usb-device class="238" />
+    <usb-device class="14" />
+    <usb-device class="255" />
+</resources>

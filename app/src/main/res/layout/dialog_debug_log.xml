@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@color/bg_dark"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="🔍 STUDIO HARDWARE DIAGNOSTICS LOG"
+        android:textColor="@color/accent_blue"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="Nhật ký chi tiết USB Host, Endpoints, MJPEG Decoder và Camera2 State"
+        android:textColor="@color/text_dim"
+        android:textSize="11sp" />
+
+    <ScrollView
+        android:id="@+id/scrollViewLog"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="12dp"
+        android:background="@color/card_bg"
+        android:fillViewport="true"
+        android:padding="8dp"
+        android:scrollbars="vertical">
+
+        <TextView
+            android:id="@+id/tvLogContent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textIsSelectable="true"
+            android:textColor="@color/text_primary"
+            android:textSize="10sp" />
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCopyLog"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="6dp"
+            android:backgroundTint="@color/accent_blue"
+            android:text="📋 SAO CHÉP LOG"
+            android:textColor="@color/white"
+            android:textSize="11sp"
+            app:cornerRadius="4dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnClearLog"
+            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+            android:layout_width="0dp"
+            android:layout_height="38dp"
+            android:layout_weight="1"
+            android:text="🗑️ XÓA LOG"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            app:cornerRadius="4dp"
+            app:strokeColor="@color/card_stroke" />
+    </LinearLayout>
+
+</LinearLayout>

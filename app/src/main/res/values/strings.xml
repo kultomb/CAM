@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">HBG LIVE CAMERA</string>
+    <string name="title_live_dashboard">HBG STUDIO CONTROL</string>
+    <string name="status_ready">SẴN SÀNG</string>
+    <string name="status_live">🔴 LIVE BROADCASTING</string>
+    <string name="btn_start_live">START LIVE</string>
+    <string name="btn_stop_live">STOP LIVE</string>
+    
+    <string name="label_bitrate">Bitrate</string>
+    <string name="label_fps">FPS</string>
+    <string name="label_upload">Upload</string>
+    <string name="label_dropped">Dropped</string>
+    <string name="label_resolution">Độ phân giải</string>
+    <string name="label_audio_vu">Âm thanh VU</string>
+    <string name="label_rtmp_url">RTMP Server URL</string>
+    <string name="label_stream_key">Stream Key</string>
+    
+    <string name="default_rtmp_url">rtmp://a.rtmp.youtube.com/live2</string>
+    <string name="default_resolution">1920 x 1080 @ 60 FPS (HW H.264)</string>
+</resources>

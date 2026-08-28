@@ -1,5 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -26,7 +28,7 @@ static constexpr size_t MAX_FRAME_SIZE = 4 * 1024 * 1024;
 struct UvcEngineContext {
     int fd = -1;
     int epAddr = 0x83;
-    int maxPacketSize = 5120;
+    int maxPacketSize = 3072;
     int altSetting = 3;
 
     std::atomic<bool> running{false};
@@ -77,21 +79,19 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 }
 
 static void workerLoop(UvcEngineContext* ctx) {
-    int packetSize = ctx->maxPacketSize > 0 ? ctx->maxPacketSize : 5120;
+    int packetSize = 3072;
     int urbBufferSize = ISO_PACKETS * packetSize;
+    int targetEp = 0x83;
 
-    LOGI("🟢 UVC Native Iso Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
-         ctx->fd, ctx->epAddr, packetSize, ctx->altSetting);
+    LOGI("🟢 16KB UVC Direct Render Engine START (fd=%d, ep=0x%02X)", ctx->fd, targetEp);
 
     int ifnum = 1;
-    int rcClaim = ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifnum);
-    LOGI("USBDEVFS_CLAIMINTERFACE Interface 1 rc=%d (errno=%d)", rcClaim, errno);
+    ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifnum);
 
     struct usbdevfs_setinterface setif;
     setif.interface = 1;
     setif.altsetting = ctx->altSetting;
-    int rcSet = ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
-    LOGI("USBDEVFS_SETINTERFACE Alt %d rc=%d (errno=%d)", ctx->altSetting, rcSet, errno);
+    ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
 
     size_t urbStructSize = sizeof(struct usbdevfs_urb) + (ISO_PACKETS * sizeof(struct usbdevfs_iso_packet_desc));
     std::vector<std::vector<uint8_t>> urbMemories(URB_COUNT, std::vector<uint8_t>(urbStructSize, 0));
@@ -100,7 +100,7 @@ static void workerLoop(UvcEngineContext* ctx) {
     for (int i = 0; i < URB_COUNT; ++i) {
         struct usbdevfs_urb* urb = reinterpret_cast<struct usbdevfs_urb*>(urbMemories[i].data());
         urb->type = USBDEVFS_URB_TYPE_ISO;
-        urb->endpoint = ctx->epAddr;
+        urb->endpoint = targetEp;
         urb->flags = USBDEVFS_URB_ISO_ASAP;
         urb->buffer = dataBuffers[i].data();
         urb->buffer_length = urbBufferSize;
@@ -110,8 +110,7 @@ static void workerLoop(UvcEngineContext* ctx) {
             urb->iso_frame_desc[p].length = packetSize;
         }
 
-        int rc = ioctl(ctx->fd, USBDEVFS_SUBMITURB, urb);
-        LOGI("USBDEVFS_SUBMITURB initial[%d] rc=%d (errno=%d)", i, rc, errno);
+        ioctl(ctx->fd, USBDEVFS_SUBMITURB, urb);
     }
 
     ctx->fpsStart = std::chrono::steady_clock::now();
@@ -140,7 +139,7 @@ static void workerLoop(UvcEngineContext* ctx) {
                                     std::lock_guard<std::mutex> lock(ctx->frameMutex);
                                     frame.swap(ctx->frameBuffer);
                                 }
-                                if (frame.size() > 100 && frame[0] == 0xFF && frame[1] == 0xD8) {
+                                if (frame.size() > 500) {
                                     ctx->fpsFrames++;
                                     deliverFrame(ctx, frame.data(), frame.size());
                                 }
@@ -172,7 +171,7 @@ static void workerLoop(UvcEngineContext* ctx) {
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
         if (elapsed >= 1000) {
-            LOGI("🟢 [16KB UVC NATIVE ISO ENGINE] FPS=%d", ctx->fpsFrames);
+            LOGI("🟢 [16KB UVC REALTIME ISO ENGINE] FPS=%d", ctx->fpsFrames);
             ctx->fpsFrames = 0;
             ctx->fpsStart = now;
         }
@@ -189,8 +188,8 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(JNIEnv* env, jobject thiz,
 
     UvcEngineContext* ctx = new UvcEngineContext();
     ctx->fd = fd;
-    ctx->epAddr = epAddr;
-    ctx->maxPacketSize = maxPacketSize;
+    ctx->epAddr = 0x83;
+    ctx->maxPacketSize = 3072;
     ctx->altSetting = altSetting;
 
     env->GetJavaVM(&ctx->jvm);
@@ -231,6 +230,6 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeIsRunning(JNIEnv*, jobject) {
 }
 
 JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
-    LOGI("HBG UVC Dynamic Native 16KB Aligned loaded");
+    LOGI("HBG UVC Direct ISO Render Native loaded");
     return JNI_VERSION_1_6;
 }

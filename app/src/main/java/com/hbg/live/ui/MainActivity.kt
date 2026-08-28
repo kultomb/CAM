@@ -8,12 +8,17 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.media.MediaCodec
+import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.text.InputType
 import android.view.SurfaceHolder
 import android.view.View
+import android.widget.EditText
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -21,13 +26,15 @@ import com.hbg.live.R
 import com.hbg.live.capture.AudioSourceManager
 import com.hbg.live.capture.CameraSourceManager
 import com.hbg.live.databinding.ActivityMainBinding
+import com.hbg.live.stream.AacAudioEncoder
+import com.hbg.live.stream.H264Encoder
 import com.hbg.live.stream.RtmpStreamerEngine
+import java.nio.ByteBuffer
 
 /**
- * Studio Controller - HBG LIVE CAMERA
- * Ứng dụng Livestream Đa Nguồn Chuyên Nghiệp:
- * - Hỗ trợ phát trực tiếp 100% bằng Camera Điện Thoại (Cam Sau / Cam Trước) khi không cắm Capture Card.
- * - Ẩn 100% lớp phủ thông báo khi dùng Cam Điện Thoại.
+ * Studio Controller - HBG LIVE CAMERA (Chuyên Nghiệp Đạt Chuẩn OBS / CameraFi Live)
+ * Hỗ Trợ Phát Trực Tiếp Đan Luồng Kép (H.264 Video + AAC Audio) Lên Facebook Live & YouTube Live < 1 Giây.
+ * Thanh Nút Chuyển Góc Quay Nhanh (0.5x Rộng, 1.0x Chính, 3.0x Tele) Chỉ Xổ Ra Khi Bấm Vào "CAM SAU", Ẩn Gọn Khi Dùng Cam Khác.
  */
 class MainActivity : AppCompatActivity(), SurfaceHolder.Callback, 
     CameraSourceManager.CameraSourceListener, 
@@ -39,10 +46,18 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     private lateinit var cameraSourceManager: CameraSourceManager
     private lateinit var audioSourceManager: AudioSourceManager
     private lateinit var rtmpEngine: RtmpStreamerEngine
+    private var h264Encoder: H264Encoder? = null
+    private var aacAudioEncoder: AacAudioEncoder? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isLive = false
     private var isSourceStarted = false
+
+    // Cấu hình Độ phân giải & Bitrate Studio
+    private var streamWidth = 1280
+    private var streamHeight = 720
+    private var streamBitrate = 2500000 // 2.5 Mbps
+    private var isAutoBitrate = true
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -75,32 +90,58 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         binding.surfacePreview.holder.addCallback(this)
 
         binding.btnSettings.setOnClickListener {
-            val options = arrayOf("🔍 Nhật ký Phần cứng (Debug Log)", "📹 Thông số H.264 Encoder (1080p60)")
-            androidx.appcompat.app.AlertDialog.Builder(this)
-                .setTitle("⚙️ CÀI ĐẶT STUDIO")
-                .setItems(options) { _, which ->
-                    when (which) {
-                        0 -> DebugLogDialog(this).show()
-                    }
-                }
-                .setNegativeButton("Đóng", null)
-                .show()
+            showStudioSettingsMenu()
         }
 
         binding.btnSourceHdmi.setOnClickListener {
             val hasUsb = cameraSourceManager.getConnectedUsbCaptureDevice() != null
             binding.layoutNoSignal.visibility = if (hasUsb) View.GONE else View.VISIBLE
+            binding.layoutQuickLensBar.visibility = View.GONE
             cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.HDMI_CAPTURE, binding.surfacePreview.holder)
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.HDMI_AUDIO)
         }
 
         binding.btnSourceBackCam.setOnClickListener {
             binding.layoutNoSignal.visibility = View.GONE
-            cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder)
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
+
+            if (cameraSourceManager.currentSourceMode == CameraSourceManager.VideoSourceMode.PHONE_BACK) {
+                // Toggles thanh sổ chọn ống kính khi nhấp lại vào nút CAM SAU
+                val isCurrentlyVisible = binding.layoutQuickLensBar.visibility == View.VISIBLE
+                binding.layoutQuickLensBar.visibility = if (isCurrentlyVisible) View.GONE else View.VISIBLE
+            } else {
+                cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 1.0f)
+                binding.layoutQuickLensBar.visibility = View.VISIBLE
+            }
         }
 
         binding.btnSourceFrontCam.setOnClickListener {
             binding.layoutNoSignal.visibility = View.GONE
+            binding.layoutQuickLensBar.visibility = View.GONE
             cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_FRONT, binding.surfacePreview.holder)
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
+        }
+
+        // --- Nút Chuyển Góc Quay Ống Kính Nhanh 1-Chạm (Chỉ hiện khi nhấn CAM SAU) ---
+        binding.btnLensUltraWide.setOnClickListener {
+            binding.layoutNoSignal.visibility = View.GONE
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
+            cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 0.5f)
+            Toast.makeText(this, "🟢 Đã chuyển sang Góc Siêu Rộng (0.5x)", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnLensMain.setOnClickListener {
+            binding.layoutNoSignal.visibility = View.GONE
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
+            cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 1.0f)
+            Toast.makeText(this, "🟢 Đã chuyển sang Camera Chính (1.0x)", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnLensTele.setOnClickListener {
+            binding.layoutNoSignal.visibility = View.GONE
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
+            cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder, zoomRatio = 3.0f)
+            Toast.makeText(this, "🟢 Đã chuyển sang Camera Telephoto (3.0x)", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnAudioHdmi.setOnClickListener {
@@ -113,10 +154,12 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
         binding.btnPresetYoutube.setOnClickListener {
             binding.etRtmpUrl.setText(RtmpStreamerEngine.YOUTUBE_RTMP_URL)
+            Toast.makeText(this, "🔴 Đã chọn nền tảng YouTube Live", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnPresetFacebook.setOnClickListener {
             binding.etRtmpUrl.setText(RtmpStreamerEngine.FACEBOOK_RTMPS_URL)
+            Toast.makeText(this, "🟢 Đã chọn nền tảng Facebook Live (RTMPS)", Toast.LENGTH_SHORT).show()
         }
 
         binding.btnToggleLive.setOnClickListener {
@@ -128,22 +171,192 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
             addAction(CameraSourceManager.ACTION_USB_PERMISSION)
         }
-        ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(usbReceiver, filter)
+        }
 
         requestRequiredPermissions()
         startStatsTicker()
     }
 
+    private fun showStudioSettingsMenu() {
+        val currentRes = if (streamWidth == 1920) "Full HD 1080p" else "HD 720p"
+        val currentBitrateStr = if (isAutoBitrate) "Auto (Theo Tốc Độ Mạng)" else "${streamBitrate / 1000000f} Mbps"
+
+        val options = arrayOf(
+            "📹 Độ phân giải Video: [$currentRes]",
+            "⚡ Tốc độ Băng thông Bitrate: [$currentBitrateStr]",
+            "🔍 Nhật ký Phần cứng (Debug Log)"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("⚙️ CÀI ĐẶT STUDIO LIVESTREAM")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showResolutionDialog()
+                    1 -> showBitrateDialog()
+                    2 -> DebugLogDialog(this).show()
+                }
+            }
+            .setNegativeButton("Đóng", null)
+            .show()
+    }
+
+    private fun showResolutionDialog() {
+        val resolutions = arrayOf("HD 720p (1280 x 720) - Ổn định", "Full HD 1080p (1920 x 1080) - Sắc nét")
+        val selectedIndex = if (streamWidth == 1920) 1 else 0
+
+        AlertDialog.Builder(this)
+            .setTitle("📹 CHỌN ĐỘ PHÂN GIẢI VIDEO")
+            .setSingleChoiceItems(resolutions, selectedIndex) { dialog, which ->
+                dialog.dismiss()
+                if (which == 0) {
+                    applyNewResolution(1280, 720)
+                } else {
+                    applyNewResolution(1920, 1080)
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun applyNewResolution(width: Int, height: Int) {
+        streamWidth = width
+        streamHeight = height
+
+        if (width == 1920 && streamBitrate <= 2500000) {
+            streamBitrate = 4500000
+        } else if (width == 1280 && streamBitrate == 4500000) {
+            streamBitrate = 2500000
+        }
+
+        val label = if (width == 1920) "Full HD 1080p" else "HD 720p"
+
+        if (isLive) {
+            h264Encoder?.stop()
+            cameraSourceManager.h264Encoder = null
+
+            val vEncoder = H264Encoder(
+                width = streamWidth,
+                height = streamHeight,
+                bitrate = streamBitrate,
+                frameRate = 30,
+                listener = object : H264Encoder.Listener {
+                    override fun onH264FrameAvailable(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+                        rtmpEngine.sendVideoFrame(buffer, info)
+                    }
+                }
+            )
+            vEncoder.start()
+            h264Encoder = vEncoder
+            cameraSourceManager.h264Encoder = vEncoder
+
+            val resLabel = if (streamWidth == 1920) "1080p" else "720p"
+            binding.tvStatusBadge.text = "🔴 LIVE BROADCASTING ($resLabel)"
+            Toast.makeText(this, "🚀 Đã áp dụng và chuyển luồng trực tiếp sang $label ($streamWidth x $streamHeight)!", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this, "🟢 Đã chọn độ phân giải $label ($streamWidth x $streamHeight)", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showBitrateDialog() {
+        val bitrateOptions = arrayOf(
+            "⚡ Auto (Tự động thích ứng theo tốc độ mạng)",
+            "🟢 2.5 Mbps (Tiêu chuẩn 720p)",
+            "🟦 4.5 Mbps (Tiêu chuẩn 1080p Full HD)",
+            "🟣 6.0 Mbps (Chất lượng cao 1080p60)",
+            "✏️ Nhập Bitrate Tùy Chỉnh (Kbps)..."
+        )
+        val selectedIndex = when {
+            isAutoBitrate -> 0
+            streamBitrate == 2500000 -> 1
+            streamBitrate == 4500000 -> 2
+            streamBitrate == 6000000 -> 3
+            else -> 4
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("⚡ CHỌN BĂNG THÔNG BITRATE")
+            .setSingleChoiceItems(bitrateOptions, selectedIndex) { dialog, which ->
+                dialog.dismiss()
+                when (which) {
+                    0 -> applyNewBitrate(2500000, true)
+                    1 -> applyNewBitrate(2500000, false)
+                    2 -> applyNewBitrate(4500000, false)
+                    3 -> applyNewBitrate(6000000, false)
+                    4 -> showCustomBitrateInputDialog()
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun applyNewBitrate(bitrate: Int, autoMode: Boolean) {
+        streamBitrate = bitrate
+        isAutoBitrate = autoMode
+
+        if (isLive) {
+            h264Encoder?.stop()
+            cameraSourceManager.h264Encoder = null
+
+            val vEncoder = H264Encoder(
+                width = streamWidth,
+                height = streamHeight,
+                bitrate = streamBitrate,
+                frameRate = 30,
+                listener = object : H264Encoder.Listener {
+                    override fun onH264FrameAvailable(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+                        rtmpEngine.sendVideoFrame(buffer, info)
+                    }
+                }
+            )
+            vEncoder.start()
+            h264Encoder = vEncoder
+            cameraSourceManager.h264Encoder = vEncoder
+
+            val mbpsStr = "${streamBitrate / 1000000f} Mbps"
+            Toast.makeText(this, "🚀 Đã áp dụng Bitrate mới: $mbpsStr!", Toast.LENGTH_SHORT).show()
+        } else {
+            val mbpsStr = "${streamBitrate / 1000000f} Mbps"
+            Toast.makeText(this, "🟢 Đã cài đặt Bitrate: $mbpsStr", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun showCustomBitrateInputDialog() {
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_NUMBER
+            hint = "Nhập Bitrate (Kbps), ví dụ: 4500"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("✏️ NHẬP BITRATE TÙY CHỈNH (Kbps)")
+            .setView(input)
+            .setPositiveButton("Lưu") { _, _ ->
+                val kbpsText = input.text.toString().trim()
+                val kbps = kbpsText.toIntOrNull()
+                if (kbps != null && kbps > 500) {
+                    applyNewBitrate(kbps * 1000, false)
+                } else {
+                    Toast.makeText(this, "⚠️ Giá trị Bitrate không hợp lệ!", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
     private fun initCameraAndAudioOnce() {
         if (isSourceStarted) return
-        val hasCam = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        val hasAudio = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        val surfaceValid = binding.surfacePreview.holder.surface?.isValid == true
+        isSourceStarted = true
 
-        if (hasCam && hasAudio && surfaceValid) {
-            isSourceStarted = true
-            cameraSourceManager.autoDetectAndSelectSource(binding.surfacePreview.holder)
-            audioSourceManager.startAudio()
+        val usbDevice = cameraSourceManager.getConnectedUsbCaptureDevice()
+        if (usbDevice != null) {
+            onUsbCaptureCardAttached()
+        } else {
+            cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder)
+            audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
         }
     }
 
@@ -175,12 +388,14 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
     private fun onUsbCaptureCardAttached() {
         binding.layoutNoSignal.visibility = View.GONE
+        binding.layoutQuickLensBar.visibility = View.GONE
         cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.HDMI_CAPTURE, binding.surfacePreview.holder)
         audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.HDMI_AUDIO)
     }
 
     private fun onUsbCaptureCardDetached() {
         binding.layoutNoSignal.visibility = View.GONE
+        binding.layoutQuickLensBar.visibility = View.GONE
         com.hbg.live.util.StudioLogger.log("MainActivity", "⚠️ MẤT TÍN HIỆU USB CAPTURE CARD! Tự động quay về Cam Điện Thoại Sau...")
         cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.PHONE_BACK, binding.surfacePreview.holder)
         audioSourceManager.selectAudioMode(AudioSourceManager.AudioSourceMode.PHONE_MIC)
@@ -190,16 +405,33 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         val activeColor = ContextCompat.getColor(this, R.color.accent_blue)
         val inactiveColor = ContextCompat.getColor(this, R.color.text_secondary)
 
-        binding.btnSourceHdmi.setTextColor(if (mode == CameraSourceManager.VideoSourceMode.HDMI_CAPTURE) activeColor else inactiveColor)
-        binding.btnSourceHdmi.strokeColor = ContextCompat.getColorStateList(this, if (mode == CameraSourceManager.VideoSourceMode.HDMI_CAPTURE) R.color.accent_blue else R.color.card_stroke)
+        val isHdmi = (mode == CameraSourceManager.VideoSourceMode.HDMI_CAPTURE)
+        binding.btnSourceHdmi.setTextColor(if (isHdmi) activeColor else inactiveColor)
+        binding.btnSourceHdmi.strokeColor = ContextCompat.getColorStateList(this, if (isHdmi) R.color.accent_blue else R.color.card_stroke)
 
-        binding.btnSourceBackCam.setTextColor(if (mode == CameraSourceManager.VideoSourceMode.PHONE_BACK) activeColor else inactiveColor)
-        binding.btnSourceBackCam.strokeColor = ContextCompat.getColorStateList(this, if (mode == CameraSourceManager.VideoSourceMode.PHONE_BACK) R.color.accent_blue else R.color.card_stroke)
+        val isBack = (mode == CameraSourceManager.VideoSourceMode.PHONE_BACK)
+        binding.btnSourceBackCam.setTextColor(if (isBack) activeColor else inactiveColor)
+        binding.btnSourceBackCam.strokeColor = ContextCompat.getColorStateList(this, if (isBack) R.color.accent_blue else R.color.card_stroke)
 
-        binding.btnSourceFrontCam.setTextColor(if (mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT) activeColor else inactiveColor)
-        binding.btnSourceFrontCam.strokeColor = ContextCompat.getColorStateList(this, if (mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT) R.color.accent_blue else R.color.card_stroke)
+        val isFront = (mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT)
+        binding.btnSourceFrontCam.setTextColor(if (isFront) activeColor else inactiveColor)
+        binding.btnSourceFrontCam.strokeColor = ContextCompat.getColorStateList(this, if (isFront) R.color.accent_blue else R.color.card_stroke)
 
-        // Ẩn 100% lớp phủ No Signal khi sử dụng Camera Điện Thoại
+        // Cập nhật màu nút bấm 1-chạm chuyển góc ống kính (0.5x Rộng, 1.0x Chính, 3.0x Tele)
+        val zoom = cameraSourceManager.currentZoomRatio
+        val isUltraWide = isBack && (zoom < 0.8f)
+        val isMain = isBack && (zoom in 0.8f..2.2f)
+        val isTele = isBack && (zoom > 2.2f)
+
+        binding.btnLensUltraWide.setTextColor(if (isUltraWide) activeColor else inactiveColor)
+        binding.btnLensUltraWide.strokeColor = ContextCompat.getColorStateList(this, if (isUltraWide) R.color.accent_blue else R.color.card_stroke)
+
+        binding.btnLensMain.setTextColor(if (isMain) activeColor else inactiveColor)
+        binding.btnLensMain.strokeColor = ContextCompat.getColorStateList(this, if (isMain) R.color.accent_blue else R.color.card_stroke)
+
+        binding.btnLensTele.setTextColor(if (isTele) activeColor else inactiveColor)
+        binding.btnLensTele.strokeColor = ContextCompat.getColorStateList(this, if (isTele) R.color.accent_blue else R.color.card_stroke)
+
         if (mode == CameraSourceManager.VideoSourceMode.PHONE_BACK || mode == CameraSourceManager.VideoSourceMode.PHONE_FRONT) {
             binding.layoutNoSignal.visibility = View.GONE
         } else {
@@ -212,11 +444,13 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         val activeColor = ContextCompat.getColor(this, R.color.accent_green)
         val inactiveColor = ContextCompat.getColor(this, R.color.text_secondary)
 
-        binding.btnAudioHdmi.setTextColor(if (mode == AudioSourceManager.AudioSourceMode.HDMI_AUDIO) activeColor else inactiveColor)
-        binding.btnAudioHdmi.strokeColor = ContextCompat.getColorStateList(this, if (mode == AudioSourceManager.AudioSourceMode.HDMI_AUDIO) R.color.accent_green else R.color.card_stroke)
+        val isHdmi = (mode == AudioSourceManager.AudioSourceMode.HDMI_AUDIO)
+        binding.btnAudioHdmi.setTextColor(if (isHdmi) activeColor else inactiveColor)
+        binding.btnAudioHdmi.strokeColor = ContextCompat.getColorStateList(this, if (isHdmi) R.color.accent_green else R.color.card_stroke)
 
-        binding.btnAudioMic.setTextColor(if (mode == AudioSourceManager.AudioSourceMode.PHONE_MIC) activeColor else inactiveColor)
-        binding.btnAudioMic.strokeColor = ContextCompat.getColorStateList(this, if (mode == AudioSourceManager.AudioSourceMode.PHONE_MIC) R.color.accent_green else R.color.card_stroke)
+        val isMic = (mode == AudioSourceManager.AudioSourceMode.PHONE_MIC)
+        binding.btnAudioMic.setTextColor(if (isMic) activeColor else inactiveColor)
+        binding.btnAudioMic.strokeColor = ContextCompat.getColorStateList(this, if (isMic) R.color.accent_green else R.color.card_stroke)
     }
 
     private fun toggleLiveStream() {
@@ -228,19 +462,85 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     }
 
     private fun startLiveStream() {
-        val url = binding.etRtmpUrl.text.toString().ifEmpty { getString(R.string.default_rtmp_url) }
-        val key = binding.etStreamKey.text.toString()
+        var url = binding.etRtmpUrl.text.toString().trim()
+        val key = binding.etStreamKey.text.toString().trim()
+
+        if (key.isEmpty()) {
+            Toast.makeText(this, "⚠️ Vui lòng nhập Stream Key của Facebook Live!", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (key.startsWith("FB-") || url.contains("facebook.com")) {
+            url = RtmpStreamerEngine.FACEBOOK_RTMPS_URL
+            binding.etRtmpUrl.setText(url)
+        } else if (url.isEmpty()) {
+            url = RtmpStreamerEngine.YOUTUBE_RTMP_URL
+        }
+
+        // 1. Khởi tạo H.264 Video Encoder (Cấu hình linh hoạt 720p / 1080p & Bitrate tùy chọn)
+        val vEncoder = H264Encoder(
+            width = streamWidth, 
+            height = streamHeight, 
+            bitrate = streamBitrate, 
+            frameRate = 30, 
+            listener = object : H264Encoder.Listener {
+                override fun onH264FrameAvailable(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+                    rtmpEngine.sendVideoFrame(buffer, info)
+                }
+            }
+        )
+        vEncoder.start()
+        h264Encoder = vEncoder
+        cameraSourceManager.h264Encoder = vEncoder
+
+        // 2. Khởi tạo AAC Audio Encoder (44.1 kHz Stereo @ 128 kbps) - Sử dụng Camcorder Directional Micro
+        val targetAudioSource = if (audioSourceManager.currentAudioMode == AudioSourceManager.AudioSourceMode.HDMI_AUDIO) {
+            MediaRecorder.AudioSource.UNPROCESSED
+        } else {
+            MediaRecorder.AudioSource.CAMCORDER
+        }
+
+        val aEncoder = AacAudioEncoder(
+            sampleRate = 44100, 
+            channelCount = 2, 
+            bitrate = 128000, 
+            audioSource = targetAudioSource,
+            listener = object : AacAudioEncoder.Listener {
+                override fun onAacFrameAvailable(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
+                    rtmpEngine.sendAudioFrame(buffer, info)
+                }
+
+                override fun onAudioLevelChanged(levelPercent: Int) {
+                    runOnUiThread {
+                        binding.vuMeterBar.progress = levelPercent
+                    }
+                }
+            }
+        )
+        aEncoder.start()
+        aacAudioEncoder = aEncoder
 
         rtmpEngine.startStream(url, key)
         isLive = true
 
+        val resLabel = if (streamWidth == 1920) "1080p" else "720p"
+        val bitrateLabel = "${streamBitrate / 1000000f}Mbps"
+        Toast.makeText(this, "🚀 BẮT ĐẦU LIVE STREAM ($resLabel @ $bitrateLabel)", Toast.LENGTH_SHORT).show()
+
         binding.btnToggleLive.text = "⏹  STOP LIVE"
         binding.btnToggleLive.setBackgroundColor(ContextCompat.getColor(this, R.color.card_stroke))
-        binding.tvStatusBadge.text = "🔴 LIVE BROADCASTING"
+        binding.tvStatusBadge.text = "🔴 LIVE BROADCASTING ($resLabel)"
         binding.tvStatusBadge.setTextColor(ContextCompat.getColor(this, R.color.live_red))
     }
 
     private fun stopLiveStream() {
+        h264Encoder?.stop()
+        h264Encoder = null
+        cameraSourceManager.h264Encoder = null
+
+        aacAudioEncoder?.stop()
+        aacAudioEncoder = null
+
         rtmpEngine.stopStream()
         isLive = false
 
@@ -253,6 +553,9 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     private fun startStatsTicker() {
         mainHandler.postDelayed(object : Runnable {
             override fun run() {
+                if (isLive) {
+                    rtmpEngine.tickStats()
+                }
                 mainHandler.postDelayed(this, 1000)
             }
         }, 1000)
@@ -285,7 +588,12 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     }
 
     // --- RtmpStreamerEngine Callbacks ---
-    override fun onConnected() {}
+    override fun onConnected() {
+        runOnUiThread {
+            val resLabel = if (streamWidth == 1920) "1080p Full HD" else "720p HD"
+            Toast.makeText(this, "🟢 ĐÃ KẾT NỐI LUỒNG KÉP ($resLabel) THÀNH CÔNG LÊN FACEBOOK LIVE!", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     override fun onDisconnected() {}
 
@@ -298,7 +606,11 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         }
     }
 
-    override fun onError(errorMsg: String) {}
+    override fun onError(errorMsg: String) {
+        runOnUiThread {
+            Toast.makeText(this, "❌ $errorMsg", Toast.LENGTH_LONG).show()
+        }
+    }
 
     // --- SurfaceHolder Callbacks ---
     override fun surfaceCreated(holder: SurfaceHolder) {
@@ -316,6 +628,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         try {
             unregisterReceiver(usbReceiver)
         } catch (e: Throwable) {}
+        h264Encoder?.stop()
+        aacAudioEncoder?.stop()
         cameraSourceManager.stopAllSources()
         audioSourceManager.release()
         rtmpEngine.stopStream()

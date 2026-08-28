@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Engine phát luồng RTMP/RTMPS chuyên dụng hỗ trợ YouTube Live & Facebook Live.
+ * Hỗ trợ tự động phân tích và nạp trực tiếp SPS/PPS (H.264 AVC Decoder Configuration Record) cho Pedro RTMP Client.
  */
 class RtmpStreamerEngine(
     private val listener: StreamStatsListener
@@ -24,6 +25,7 @@ class RtmpStreamerEngine(
     private val rtmpClient = RtmpClient(this)
     
     private var isStreaming = false
+    private var isVideoHeaderConfigured = false
     private var targetUrl: String = ""
 
     private var totalBytesSent = AtomicLong(0)
@@ -61,6 +63,7 @@ class RtmpStreamerEngine(
         Log.d(TAG, "Đang kết nối tới RTMP Server: $targetUrl")
         
         try {
+            isVideoHeaderConfigured = false
             rtmpClient.connect(targetUrl)
 
             isStreaming = true
@@ -76,6 +79,21 @@ class RtmpStreamerEngine(
     fun sendVideoFrame(byteBuffer: ByteBuffer, bufferInfo: android.media.MediaCodec.BufferInfo) {
         if (!isStreaming) return
         try {
+            // Tự động phân tích SPS/PPS từ gói CODEC_CONFIG để thiết lập H.264 AVC Header cho Pedro Client
+            if ((bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0 || !isVideoHeaderConfigured) {
+                val spsPps = parseSpsAndPps(byteBuffer)
+                if (spsPps != null) {
+                    val (sps, pps) = spsPps
+                    try {
+                        rtmpClient.setVideoInfo(ByteBuffer.wrap(sps), ByteBuffer.wrap(pps), null)
+                        isVideoHeaderConfigured = true
+                        Log.d(TAG, "🟢 Đã nạp thành công SPS (${sps.size}b) và PPS (${pps.size}b) cho Pedro RTMP Client!")
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "Lỗi nạp setVideoInfo", e)
+                    }
+                }
+            }
+
             rtmpClient.sendVideo(byteBuffer, bufferInfo)
             totalBytesSent.addAndGet(bufferInfo.size.toLong())
             totalFramesSent.incrementAndGet()
@@ -83,6 +101,57 @@ class RtmpStreamerEngine(
             Log.e(TAG, "Lỗi gửi Video Frame", e)
             totalFramesDropped.incrementAndGet()
         }
+    }
+
+    private fun parseSpsAndPps(buffer: ByteBuffer): Pair<ByteArray, ByteArray>? {
+        val bytes = ByteArray(buffer.remaining())
+        val duplicate = buffer.duplicate()
+        duplicate.get(bytes)
+
+        var sps: ByteArray? = null
+        var pps: ByteArray? = null
+
+        val nalList = ArrayList<ByteArray>()
+        var lastIndex = 0
+        var i = 0
+        while (i < bytes.size - 3) {
+            if (bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 0.toByte() && bytes[i + 3] == 1.toByte()) {
+                if (i > lastIndex) {
+                    val nal = bytes.copyOfRange(lastIndex, i)
+                    nalList.add(nal)
+                }
+                lastIndex = i + 4
+                i += 4
+            } else if (bytes[i] == 0.toByte() && bytes[i + 1] == 0.toByte() && bytes[i + 2] == 1.toByte()) {
+                if (i > lastIndex) {
+                    val nal = bytes.copyOfRange(lastIndex, i)
+                    nalList.add(nal)
+                }
+                lastIndex = i + 3
+                i += 3
+            } else {
+                i++
+            }
+        }
+        if (lastIndex < bytes.size) {
+            nalList.add(bytes.copyOfRange(lastIndex, bytes.size))
+        }
+
+        for (nal in nalList) {
+            if (nal.isNotEmpty()) {
+                val type = (nal[0].toInt() and 0x1F)
+                if (type == 7) {
+                    sps = nal
+                } else if (type == 8) {
+                    pps = nal
+                }
+            }
+        }
+
+        if (sps != null && pps != null) {
+            return Pair(sps, pps)
+        }
+        return null
     }
 
     fun sendAudioFrame(byteBuffer: ByteBuffer, bufferInfo: android.media.MediaCodec.BufferInfo) {
@@ -98,6 +167,7 @@ class RtmpStreamerEngine(
     fun stopStream() {
         if (!isStreaming) return
         isStreaming = false
+        isVideoHeaderConfigured = false
         try {
             rtmpClient.disconnect()
         } catch (e: Exception) {

@@ -17,9 +17,10 @@ object StudioLogger {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     @Synchronized
-    fun log(tag: String, message: String) {
+    fun log(tag: String, message: String, throwable: Throwable? = null) {
         val timestamp = dateFormat.format(Date())
-        val entry = "[$timestamp] [$tag] $message"
+        val errSuffix = if (throwable != null) " Exception: ${throwable.message}" else ""
+        val entry = "[$timestamp] [$tag] $message$errSuffix"
         
         logList.add(entry)
         if (logList.size > 200) {

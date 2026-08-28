@@ -58,7 +58,7 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="4dp"
-                    android:text="Cắm HDMI Capture Card qua USB-C để tự động nhận tín hiệu Sony A73"
+                    android:text="Cắm HDMI Capture Card qua USB-C để tự động nhận tín hiệu CAM HDMI"
                     android:textColor="@color/text_dim"
                     android:textSize="12sp" />
             </LinearLayout>
@@ -142,7 +142,7 @@
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:padding="0dp"
-                    android:text="Sony A73"
+                    android:text="CAM HDMI"
                     android:textColor="@color/accent_blue"
                     android:textSize="9sp"
                     app:strokeColor="@color/accent_blue" />
@@ -172,6 +172,60 @@
                     android:insetBottom="0dp"
                     android:padding="0dp"
                     android:text="Cam Trước"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/card_stroke" />
+            </LinearLayout>
+
+            <!-- Quick Back Lens Selection Row (0.5x Ultra-Wide, 1.0x Main, 3.0x Telephoto) -->
+            <LinearLayout
+                android:id="@+id/layoutQuickLensBar"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLensUltraWide"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="0.5x Rộng"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/card_stroke" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLensMain"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:layout_marginEnd="2dp"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="1.0x Chính"
+                    android:textColor="@color/accent_blue"
+                    android:textSize="9sp"
+                    app:strokeColor="@color/accent_blue" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnLensTele"
+                    style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:padding="0dp"
+                    android:text="3.0x Tele"
                     android:textColor="@color/text_secondary"
                     android:textSize="9sp"
                     app:strokeColor="@color/card_stroke" />

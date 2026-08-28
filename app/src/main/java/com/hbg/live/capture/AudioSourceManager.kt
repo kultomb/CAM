@@ -5,14 +5,15 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.util.Log
+import android.os.Process
+import com.hbg.live.util.StudioLogger
 import kotlin.math.sqrt
 
 /**
- * Engine Quản lý Nguồn Âm Thanh Tập Trung (Audio Source Manager)
- * Hỗ trợ 2 Chế độ Nguồn Âm thanh độc lập:
- * 1. HDMI_AUDIO: Tiếng từ HDMI Capture Card (Sony A73 / Bàn trộn hình qua USB Audio Class UAC)
- * 2. PHONE_MIC: Micro tích hợp / Tai nghe điện thoại
+ * Enterprise Audio Source Manager - HBG LIVE CAMERA
+ * Hỗ trợ chuyển đổi linh hoạt nguồn Âm thanh Livestream:
+ * 1. HDMI_AUDIO: Tiếng từ HDMI Capture Card / Bàn trộn hình qua USB Audio Class (UAC)
+ * 2. PHONE_MIC: Tiếng từ Micro Định Hướng Camcorder Điện Thoại
  */
 class AudioSourceManager(
     private val context: Context,
@@ -20,109 +21,127 @@ class AudioSourceManager(
     private val listener: AudioSourceListener
 ) {
     enum class AudioSourceMode(val displayName: String) {
-        HDMI_AUDIO("HDMI / USB Audio (Sony A73)"),
-        PHONE_MIC("Micro Điện Thoại / Tai Nghe")
+        HDMI_AUDIO("Âm thanh CAM HDMI"),
+        PHONE_MIC("Micro Điện Thoại")
     }
 
     interface AudioSourceListener {
         fun onAudioSourceChanged(mode: AudioSourceMode)
         fun onAudioLevelChanged(levelPercent: Int)
-        fun onError(errorMsg: String)
     }
 
     var currentAudioMode: AudioSourceMode = AudioSourceMode.PHONE_MIC
         private set
 
     private var audioRecord: AudioRecord? = null
-    private var isRecording = false
-    private var recordingThread: Thread? = null
-
-    private val channelConfig = AudioFormat.CHANNEL_IN_STEREO
-    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    @Volatile private var isRecording = false
+    private var recordThread: Thread? = null
 
     companion object {
         private const val TAG = "AudioSourceManager"
     }
 
-    /**
-     * Chuyển đổi nguồn âm thanh giữa HDMI Audio và Mic Điện thoại
-     */
     fun selectAudioMode(mode: AudioSourceMode) {
-        if (currentAudioMode == mode && isRecording) return
-
-        Log.d(TAG, "Chuyển đổi Nguồn Âm Thanh sang: ${mode.displayName}")
-        stopAudio()
-
         currentAudioMode = mode
+        stopRecording()
+        startRecordingForMode(mode)
         listener.onAudioSourceChanged(mode)
-        startAudio()
     }
 
     @SuppressLint("MissingPermission")
-    fun startAudio() {
-        if (isRecording) return
-
-        val audioSource = when (currentAudioMode) {
+    private fun startRecordingForMode(mode: AudioSourceMode) {
+        val preferredSource = when (mode) {
             AudioSourceMode.HDMI_AUDIO -> MediaRecorder.AudioSource.UNPROCESSED
-            AudioSourceMode.PHONE_MIC -> MediaRecorder.AudioSource.MIC
+            AudioSourceMode.PHONE_MIC -> MediaRecorder.AudioSource.CAMCORDER
+        }
+
+        val channelConfig = AudioFormat.CHANNEL_IN_STEREO
+        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+        val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+        val bufferSize = maxOf(minBufferSize, 4096)
+
+        val sourcesToTry = intArrayOf(
+            preferredSource,
+            MediaRecorder.AudioSource.CAMCORDER,
+            MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.UNPROCESSED
+        )
+
+        var record: AudioRecord? = null
+        for (src in sourcesToTry) {
+            try {
+                val r = AudioRecord(
+                    src,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize
+                )
+                if (r.state == AudioRecord.STATE_INITIALIZED) {
+                    record = r
+                    break
+                } else {
+                    r.release()
+                }
+            } catch (e: Throwable) {}
+        }
+
+        if (record == null) {
+            StudioLogger.log(TAG, "❌ Không thể khởi tạo AudioRecord với bất kỳ nguồn âm thanh nào!")
+            return
         }
 
         try {
-            audioRecord = AudioRecord(
-                audioSource,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                minBufferSize * 2
-            )
-
+            audioRecord = record
             audioRecord?.startRecording()
             isRecording = true
 
-            recordingThread = Thread {
-                val buffer = ShortArray(minBufferSize)
+            recordThread = Thread {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+                val buffer = ShortArray(1024)
+
                 while (isRecording) {
-                    val readSize = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (readSize > 0) {
-                        val rms = calculateRms(buffer, readSize)
-                        val percent = (rms / 32767.0 * 100).toInt().coerceIn(0, 100)
-                        listener.onAudioLevelChanged(percent)
+                    val readCount = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    if (readCount > 0) {
+                        val level = calculateRmsLevelPercent(buffer, readCount)
+                        listener.onAudioLevelChanged(level)
                     }
                 }
-            }.apply { start() }
+            }.apply {
+                name = "StudioAudioRecordThread"
+                start()
+            }
 
-            Log.d(TAG, "Đã khởi chạy Audio Engine: ${currentAudioMode.displayName}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Lỗi khi thu âm PCM", e)
-            listener.onError("Lỗi thu âm: ${e.message}")
+            StudioLogger.log(TAG, "► ĐÃ MỞ NGUỒN ÂM THANH: ${mode.displayName}")
+        } catch (e: Throwable) {
+            StudioLogger.log(TAG, "❌ Lỗi khởi tạo AudioRecord (${mode.displayName})", e)
         }
     }
 
-    private fun calculateRms(buffer: ShortArray, readSize: Int): Double {
+    private fun calculateRmsLevelPercent(buffer: ShortArray, readCount: Int): Int {
         var sum = 0.0
-        for (i in 0 until readSize) {
-            sum += buffer[i] * buffer[i]
+        for (i in 0 until readCount) {
+            val sample = buffer[i].toDouble()
+            sum += sample * sample
         }
-        return sqrt(sum / readSize)
+        val rms = sqrt(sum / readCount)
+        val maxAmp = 32767.0
+        val percent = ((rms / maxAmp) * 100 * 3.5).toInt()
+        return percent.coerceIn(0, 100)
     }
 
-    fun stopAudio() {
+    fun stopRecording() {
         isRecording = false
-        recordingThread?.join(500)
-        recordingThread = null
-
         try {
             audioRecord?.stop()
             audioRecord?.release()
-            audioRecord = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Lỗi dừng Audio", e)
-        }
-        Log.d(TAG, "Đã dừng Audio Engine")
+        } catch (e: Throwable) {}
+        audioRecord = null
+        recordThread = null
     }
 
     fun release() {
-        stopAudio()
+        stopRecording()
     }
 }

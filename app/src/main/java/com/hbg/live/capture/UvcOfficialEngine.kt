@@ -12,13 +12,12 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.util.Log
 import android.view.SurfaceHolder
+import com.hbg.live.stream.H264Encoder
 import com.hbg.live.util.StudioLogger
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * UvcOfficialEngine V14 - Ultra Sharp 32-bit ARGB_8888 & High-Efficiency Hardware Pipeline:
- * Giải mã ảnh chất lượng cao 32-bit ARGB_8888 nét căng rực rỡ từ Sony A73 / Capture Card, 
- * kết hợp với cơ chế Frame-Dropping mượt mà 60 FPS giúp phát livestream nhẹ mạng chuẩn HD 1080p.
+ * UvcOfficialEngine V19 - Live RTMP Streaming Integrated Engine:
+ * Tích hợp H264Encoder tự động truyền dữ liệu khung hình camera mã hóa sang Facebook Live & YouTube Live.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -35,15 +34,11 @@ class UvcOfficialEngine(
     private var usbInterface: UsbInterface? = null
     private var nativeBridge: UvcNativeBridge? = null
 
-    @Volatile private var isStreaming = false
-    private val isRendering = AtomicBoolean(false)
+    var h264Encoder: H264Encoder? = null
 
-    // Tối ưu giải mã hình ảnh 32-bit ARGB_8888 cho độ nét căng sắc nét 100% chuẩn màu Studio
-    private val decodeOptions = BitmapFactory.Options().apply {
-        inPreferredConfig = Bitmap.Config.ARGB_8888
-        inSampleSize = 1
-        inMutable = true
-    }
+    private val isRendering = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    @Volatile private var isStreaming = false
 
     companion object {
         private const val TAG = "UvcOfficialEngine"
@@ -64,7 +59,7 @@ class UvcOfficialEngine(
         clearSurfaceWithLoading(holder)
 
         Thread {
-            logDebug("=== [KHỞI ĐỘNG NATIVE 16KB ALIGNED ENGINE 32-BIT ARGB] ===")
+            logDebug("=== [KHỞI ĐỘNG UVC PRECISION EOI RENDER ENGINE] ===")
             logDebug("Thiết bị: ${device.deviceName} (VID: 0x${Integer.toHexString(device.vendorId)}, PID: 0x${Integer.toHexString(device.productId)})")
 
             if (!usbManager.hasPermission(device)) {
@@ -84,32 +79,16 @@ class UvcOfficialEngine(
                 val fd = connection.fileDescriptor
                 logDebug("🔑 Đã mở Native File Descriptor: fd=$fd")
 
-                var targetInterface: UsbInterface? = null
-                var epAddr = 0x83
-                var maxPacketSize = 5120
-                var altSetting = 3
-
-                for (i in 0 until device.interfaceCount) {
-                    val iface = device.getInterface(i)
-                    if (iface.interfaceClass == UsbConstants.USB_CLASS_VIDEO && iface.interfaceSubclass == 2) {
-                        if (iface.endpointCount > 0) {
-                            val ep = iface.getEndpoint(0)
-                            if (ep.type == UsbConstants.USB_ENDPOINT_XFER_ISOC) {
-                                targetInterface = iface
-                                epAddr = ep.address
-                                maxPacketSize = ep.maxPacketSize
-                                altSetting = iface.alternateSetting
-                                break
-                            }
-                        }
+                val targetInterface = (0 until device.interfaceCount)
+                    .map { device.getInterface(it) }
+                    .firstOrNull {
+                        it.interfaceClass == UsbConstants.USB_CLASS_VIDEO &&
+                        it.interfaceSubclass == 2
+                    } ?: (0 until device.interfaceCount)
+                    .map { device.getInterface(it) }
+                    .firstOrNull {
+                        it.interfaceClass == UsbConstants.USB_CLASS_VIDEO
                     }
-                }
-
-                if (targetInterface == null) {
-                    targetInterface = (0 until device.interfaceCount)
-                        .map { device.getInterface(it) }
-                        .firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_VIDEO && it.interfaceSubclass == 2 }
-                }
 
                 if (targetInterface == null) {
                     logError("Không tìm thấy VideoStreaming Interface!")
@@ -126,12 +105,13 @@ class UvcOfficialEngine(
                     return@Thread
                 }
 
-                val setAlt = connection.setInterface(targetInterface)
-                if (!setAlt) {
-                    logDebug("⚠️ Note: setInterface trả về false (vẫn tiếp tục thử Native Iso Direct)")
-                }
+                connection.setInterface(targetInterface)
 
-                logDebug("Interface ${targetInterface.id} Alt $altSetting READY (EP=0x${Integer.toHexString(epAddr)}, PacketSize=$maxPacketSize)")
+                val altSetting = 3
+                val epAddr = 0x83
+                val maxPacketSize = 3072
+
+                logDebug("Interface ${targetInterface.id} Alt $altSetting READY (Video EP=0x${Integer.toHexString(epAddr)}, PacketSize=$maxPacketSize)")
 
                 performFullProbeCommitDebug(connection, targetInterface.id)
 
@@ -170,7 +150,7 @@ class UvcOfficialEngine(
             return
         }
 
-        logDebug("🟢 32-BIT ARGB 16KB NATIVE ISO STREAM STARTED SUCCESSFULLY!")
+        logDebug("🟢 UVC PRECISION RENDER ENGINE STARTED SUCCESSFULLY!")
     }
 
     private fun renderJpeg(jpeg: ByteArray, holder: SurfaceHolder) {
@@ -179,16 +159,43 @@ class UvcOfficialEngine(
         }
 
         try {
-            if (jpeg.size < 4 || jpeg[0] != 0xFF.toByte() || jpeg[1] != 0xD8.toByte()) {
+            if (jpeg.size < 4) {
                 isRendering.set(false)
                 return
             }
 
-            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, decodeOptions)
+            var soiOffset = -1
+            var eoiOffset = -1
+
+            val scanLimit = minOf(64, jpeg.size - 1)
+            for (i in 0 until scanLimit) {
+                if (jpeg[i] == 0xFF.toByte() && jpeg[i + 1] == 0xD8.toByte()) {
+                    soiOffset = i
+                    break
+                }
+            }
+
+            if (soiOffset < 0) soiOffset = 0
+
+            for (i in jpeg.size - 2 downTo soiOffset) {
+                if (jpeg[i] == 0xFF.toByte() && jpeg[i + 1] == 0xD9.toByte()) {
+                    eoiOffset = i + 2
+                    break
+                }
+            }
+
+            val validLength = if (eoiOffset > soiOffset) (eoiOffset - soiOffset) else (jpeg.size - soiOffset)
+
+            val bitmap = BitmapFactory.decodeByteArray(jpeg, soiOffset, validLength)
             if (bitmap == null) {
                 isRendering.set(false)
                 return
             }
+
+            // Đẩy trực tiếp khung hình Bitmap sang H264Encoder để phát luồng RTMP lên Facebook Live & YouTube Live
+            try {
+                h264Encoder?.encodeBitmap(bitmap)
+            } catch (e: Throwable) {}
 
             val surface = holder.surface
             if (surface != null && surface.isValid) {
@@ -229,8 +236,10 @@ class UvcOfficialEngine(
     private fun performFullProbeCommitDebug(connection: UsbDeviceConnection, interfaceId: Int) {
         try {
             val probeData = ByteArray(26)
-            probeData[0] = 1.toByte()
-            probeData[1] = 1.toByte()
+            probeData[0] = 0x01.toByte()
+            probeData[1] = 0x02.toByte()
+            probeData[2] = 0x01.toByte()
+            probeData[3] = 0x00.toByte()
             probeData[4] = 0x15.toByte()
             probeData[5] = 0x16.toByte()
             probeData[6] = 0x05.toByte()
@@ -238,11 +247,11 @@ class UvcOfficialEngine(
             probeData[22] = 0x00.toByte()
             probeData[23] = 0x0C.toByte()
 
-            val resSetProbe = connection.controlTransfer(0x21, 0x01, 0x0100, interfaceId, probeData, probeData.size, 200)
-            val resGetProbe = connection.controlTransfer(0xA1, 0x81, 0x0100, interfaceId, probeData, probeData.size, 200)
-            val resSetCommit = connection.controlTransfer(0x21, 0x01, 0x0200, interfaceId, probeData, probeData.size, 200)
+            val resSetProbe = connection.controlTransfer(0x21, 0x01, 0x0100, interfaceId, probeData, probeData.size, 500)
+            val resGetProbe = connection.controlTransfer(0xA1, 0x81, 0x0100, interfaceId, probeData, probeData.size, 500)
+            val resSetCommit = connection.controlTransfer(0x21, 0x01, 0x0200, interfaceId, probeData, probeData.size, 500)
             
-            logDebug("UVC 1080p30 Negotiation: SET_PROBE=$resSetProbe, GET_PROBE=$resGetProbe, SET_COMMIT=$resSetCommit")
+            logDebug("UVC 1080p30 MJPEG Negotiation: SET_PROBE=$resSetProbe, GET_PROBE=$resGetProbe, SET_COMMIT=$resSetCommit")
         } catch (e: Throwable) {
             logError("Lỗi Probe Commit negotiation", e)
         }

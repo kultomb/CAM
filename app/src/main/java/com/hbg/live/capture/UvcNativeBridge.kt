@@ -15,6 +15,14 @@ class UvcNativeBridge(
         fun onNativeError(message: String)
     }
 
+    fun onNativeFrame(jpeg: ByteArray) {
+        listener.onNativeFrame(jpeg)
+    }
+
+    fun onNativeError(message: String) {
+        listener.onNativeError(message)
+    }
+
     companion object {
         private const val TAG = "UvcNativeBridge"
 

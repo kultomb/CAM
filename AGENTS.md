@@ -66,10 +66,10 @@
 
 ---
 
-## 7. Tách Độc Lập Đường Xử Lý Preview & Streaming Pipeline (Zero-Copy & Mát Máy)
+## 7. Đường Xử Lý Low-Copy Pipeline (Tối Ưu Bộ Nhớ CPU & Zero GC)
 
-* **Nguyên lý Đỉnh Cao**: Tuyệt đối **KHÔNG** dùng pipeline tạo rác GC: `MJPEG -> Bitmap ARGB_8888 -> Canvas -> Bitmap -> MediaCodec`. Pipeline này ngốn 500MB/s RAM, gây khựng GC stutter và khiến điện thoại nóng 48°C chỉ sau 5 phút.
-* **Sơ đồ Đường Xử Lý Tách Độc Lập**:
+* **Nguyên lý Đỉnh Cao**: Tránh tạo rác GC: `MJPEG -> Bitmap ARGB_8888 -> Canvas -> Bitmap -> MediaCodec` (ngốn 500MB/s RAM).
+* **Sơ đồ Đường Xử Lý Low-Copy**:
   ```text
                       MJPEG (C++ UVC Engine)
                                 │
@@ -83,12 +83,12 @@
   ```
 * **Quy tắc**:
   * Luồng USB C++ chỉ làm nhiệm vụ: `READ -> VALIDATE -> ASSEMBLE -> QUEUE`. Không bao giờ giải mã JPEG trong USB Reader thread.
-  * Preview hiển thị qua `ANativeWindow` hoặc SurfaceDirect Zero-Copy.
-  * Livestream mã hóa qua `MediaCodec` H.264 Hardware Encoder (`COLOR_FormatSurface` / Direct Surface Feed).
+  * Preview hiển thị qua `ANativeWindow` Low-Copy Pipeline.
+  * Khung hình giải mã dùng chung tham chiếu (Shared Reference), không tạo bản sao lớn dư thừa.
 
 ---
 
-## 8. Luồng USB Thread Cách Ly Hoàn Toàn Với Mạng (Network Queue Isolation)
+## 8. Cách Ly Hoàn Toàn Luồng Mạng & USB Thread
 
 * **Bài học**: Khi tín hiệu mạng 5G / WiFi bị suy giảm hoặc lag, bộ đẩy RTMP/SRT bị nghẽn. Nếu không cách ly, bộ nghẽn mạng sẽ kéo chậm luồng C++ USB Reader, làm mất gói URB Isochronous và gây sọc hình / rớt kết nối USB.
 * **Quy tắc**:
@@ -97,21 +97,35 @@
 
 ---
 
-## 9. Bộ Kiểm Soát Nhiệt Độ Thích Ứng (Thermal & Adaptive Bitrate Controller)
+## 9. Thermal Controller Với State Machine Thích Ứng (Mát Máy)
 
-* **Chiến lược giữ điện thoại luôn mát (32°C - 36°C)**:
-  * **Bình thường (< 38°C)**: Cấu hình 1080p 60FPS @ Bitrate 6.0 Mbps.
-  * **Ấm máy (38°C - 42°C)**: Giữ 1080p 60FPS, điều chỉnh Bitrate xuống 4.5 Mbps.
-  * **Nóng máy (42°C - 45°C)**: Chuyển 1080p 30FPS @ Bitrate 3.5 Mbps (giảm 50% tải GPU/CPU).
-  * **Rất nóng (> 45°C)**: Chuyển 720p 30FPS @ Bitrate 2.5 Mbps và hiện Toast cảnh báo hạ nhiệt.
-* **MediaCodec Bitrate Mode**: Sử dụng `MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR` (Variable Bitrate) kết hợp `AVCProfileHigh` để tự động giảm dung lượng ở phân cảnh ít chuyển động.
+* **Chiến lược kiểm soát nhiệt độ theo State Machine**:
+  * `NORMAL`: 1080p60 @ Bitrate cao.
+  * `WARM`: Giữ 1080p60, tự động giảm Bitrate.
+  * `HOT`: Giảm FPS (60 -> 30 FPS) giảm 50% tải GPU/CPU.
+  * `SEVERE`: Hạ độ phân giải/FPS + hiện cảnh báo hạ nhiệt.
+* **Dynamic MediaCodec Query**: Tự động truy vấn `MediaCodecList` để chọn `Profile` (`AVCProfileHigh` / `Main` / `Baseline`) và `ColorFormat` tương thích phần cứng thực tế của từng mẫu SoC điện thoại.
 
 ---
 
-## 10. USB Watchdog & Cơ Chế Tự Động Phục Hồi (Auto Reconnect Recovery)
+## 10. USB Watchdog State Machine & Quy Trình Tái Phục Hồi An Toàn
 
-* **Nguyên tắc An Toàn**: Không để bất kỳ lỗi USB phần cứng hay rút cáp đột ngột làm ứng dụng bị crash.
-* **Cơ chế Watchdog**:
-  * Giám sát nếu trong 1.0 giây không nhận được gói tin MJPEG hoặc FPS = 0:
-    1. Tự động ngắt luồng URB cũ qua `USBDEVFS_DISCARDURB`.
-    2. Tự động tái nạp Data Plane C++ trong 100ms mà **không ngắt luồng RTMP/SRT** phát trực tiếp.
+* **State Machine Phục Hồi**:
+  ```text
+  RUNNING ──(Timeout 1.5s)──> SUSPECT ──(Timeout tiếp)──> RECOVERING ──> RESTART UVC ──> RUNNING
+  ```
+* **Quy trình Tái Phục Hồi Chuẩn Kỹ Thuật**:
+  1. Hủy các URB đang treo qua `USBDEVFS_DISCARDURB`.
+  2. Đọc thu hồi toàn bộ URB qua `USBDEVFS_REAPURBNDELAY`.
+  3. Dừng luồng C++ Native Stream an toàn.
+  4. Cấu hình lại `USBDEVFS_SETINTERFACE`.
+  5. Nộp lại Ring Buffer URB mới và tiếp tục stream.
+
+---
+
+## 11. Phác Đồ Kế Hoạch Thử Nghiệm 4 Tầng (Verification Plan)
+
+* **TEST 1 — USB**: 100 lần cắm/rút liên tục -> 0 native crash, 0 deadlock, 0 FD leak.
+* **TEST 2 — Video**: 1080p30 / 1080p60 chạy liên tục 30-60 phút -> FPS ổn định, drop rate thấp, 0 vỡ hình.
+* **TEST 3 — Thermal**: Theo dõi CPU, GPU, SoC thermal status, nhiệt độ pin, FPS, Bitrate, Dropped frames.
+* **TEST 4 — Network**: Chuyển đổi linh hoạt Wi-Fi <-> 5G -> Luồng USB Video chạy liên tục 100% không bị ngắt.

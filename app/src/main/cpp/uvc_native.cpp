@@ -82,7 +82,7 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 
 static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     size_t sz = ctx->frameBuffer.size();
-    if (sz < 1000) return;
+    if (sz < 100) return;
 
     // 1. Tìm mốc SOI (0xFF, 0xD8) chuẩn xác ở đầu khung ảnh
     size_t soiPos = 0;
@@ -96,12 +96,12 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     }
     if (!foundSoi) return;
 
-    // 2. Tìm mốc EOI (0xFF, 0xD9) chuẩn xác xuất hiện ĐẦU TIÊN ngay sau mốc SOI
+    // 2. Tìm mốc EOI (0xFF, 0xD9) chuẩn xác ở cuối khung ảnh
     size_t eoiPos = 0;
     bool foundEoi = false;
-    for (size_t i = soiPos + 2; i + 1 < sz; ++i) {
-        if (ctx->frameBuffer[i] == 0xFF && ctx->frameBuffer[i + 1] == 0xD9) {
-            eoiPos = i + 2;
+    for (size_t i = sz; i >= soiPos + 2; --i) {
+        if (ctx->frameBuffer[i - 2] == 0xFF && ctx->frameBuffer[i - 1] == 0xD9) {
+            eoiPos = i;
             foundEoi = true;
             break;
         }
@@ -109,7 +109,7 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     if (!foundEoi) return;
 
     size_t jpegLen = eoiPos - soiPos;
-    if (jpegLen >= 1000) {
+    if (jpegLen >= 100) {
         deliverFrame(ctx, ctx->frameBuffer.data() + soiPos, jpegLen);
         ctx->frameCount++;
         ctx->fpsFrames++;
@@ -117,7 +117,8 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
 }
 
 static void workerLoop(UvcEngineContext* ctx) {
-    int packetSize = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 1024;
+    int packetStride = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 1024;
+    int packetSize = packetStride;
     int targetEp = (ctx->epAddr != 0) ? ctx->epAddr : 0x83;
     int altSetting = (ctx->altSetting > 0) ? ctx->altSetting : 1;
     int ifaceId = ctx->ifaceId;
@@ -173,7 +174,7 @@ static void workerLoop(UvcEngineContext* ctx) {
     }
 
     packetSize = workingPacketSize;
-    int urbBufferSize = ISO_PACKETS * packetSize;
+    int urbBufferSize = ISO_PACKETS * packetStride;
     size_t urbStructSize = sizeof(struct usbdevfs_urb) + (ISO_PACKETS * sizeof(struct usbdevfs_iso_packet_desc));
     std::vector<std::vector<uint8_t>> urbMemories(URB_COUNT, std::vector<uint8_t>(urbStructSize, 0));
     std::vector<std::vector<uint8_t>> dataBuffers(URB_COUNT, std::vector<uint8_t>(urbBufferSize, 0));
@@ -211,7 +212,7 @@ static void workerLoop(UvcEngineContext* ctx) {
             for (int p = 0; p < reapedUrb->number_of_packets; ++p) {
                 const auto& desc = reapedUrb->iso_frame_desc[p];
                 if (desc.actual_length > 2) {
-                    int offset = p * packetSize;
+                    int offset = p * packetStride;
                     uint8_t headerLen = buffer[offset];
                     uint8_t headerFlags = buffer[offset + 1];
 

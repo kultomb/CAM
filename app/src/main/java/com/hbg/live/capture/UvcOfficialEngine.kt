@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Đảm bảo 100% độc quyền SurfaceView Canvas cho Kotlin renderJpeg, loại bỏ hoàn toàn dải xám 25% đáy và sắc đỏ.
+ * Đảm bảo an toàn bộ đệm bộ nhớ Bitmap (xóa bỏ bitmap.recycle để tránh race condition) và tính toán tỷ lệ Fit-Center không bị nháy.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -191,7 +191,7 @@ class UvcOfficialEngine(
                 // 1. Nạp khung hình Bitmap cho H.264 Encoder đẩy luồng lên Facebook Live
                 h264Encoder?.encodeBitmap(bitmap)
 
-                // 2. Render khung hình xem trước Fit-Center độc quyền SurfaceView Canvas
+                // 2. Render khung hình xem trước Fit-Center không bị biến dạng hay vệt nháy
                 val surface = holder.surface
                 if (surface != null && surface.isValid) {
                     val canvas = holder.lockCanvas()
@@ -216,21 +216,7 @@ class UvcOfficialEngine(
                         }
                     }
                 }
-
-                bitmap.recycle()
-
-                frameCount++
-                if (fpsStartTime == 0L) {
-                    fpsStartTime = System.currentTimeMillis()
-                } else {
-                    val elapsed = System.currentTimeMillis() - fpsStartTime
-                    if (elapsed >= 1000) {
-                        val fps = (frameCount * 1000f) / elapsed
-                        mainHandler.post { listener.onFrameFps(fps) }
-                        frameCount = 0
-                        fpsStartTime = System.currentTimeMillis()
-                    }
-                }
+                // Không gọi bitmap.recycle() thủ công để tránh race condition với luồng H264Encoder!
             }
         } catch (e: Throwable) {
             logError("Lỗi renderJpeg", e)

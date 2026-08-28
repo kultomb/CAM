@@ -53,7 +53,7 @@ static UvcEngineContext* g_ctx = nullptr;
 static std::mutex g_ctxMutex;
 
 static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t length) {
-    if (!ctx || !ctx->running || !data || length < 5000) return;
+    if (!ctx || !ctx->running || !data || length < 8000) return;
 
     JNIEnv* env = nullptr;
     bool attached = false;
@@ -102,7 +102,6 @@ static void workerLoop(UvcEngineContext* ctx) {
         LOGE("❌ USBDEVFS_SETINTERFACE (iface=%d, alt=%d) errno=%d (%s)", ifaceId, altSetting, errno, strerror(errno));
     }
 
-    // Tự động thử nghiệm các mốc packetSize (1024 -> 960 -> 768 -> 512 -> 384 -> 192 -> 128) nếu Kernel báo Message too long
     int sizesToTry[] = { packetSize, 1024, 960, 896, 768, 512, 384, 192, 128 };
     int workingPacketSize = packetSize;
 
@@ -164,13 +163,11 @@ static void workerLoop(UvcEngineContext* ctx) {
 
     ctx->fpsStart = std::chrono::steady_clock::now();
     uint64_t totalBytesReceived = 0;
-    int emptyReapCount = 0;
 
     while (ctx->running) {
         struct usbdevfs_urb* reapedUrb = nullptr;
         int rc = ioctl(ctx->fd, USBDEVFS_REAPURBNDELAY, &reapedUrb);
         if (rc == 0 && reapedUrb != nullptr) {
-            emptyReapCount = 0;
             uint8_t* buffer = reinterpret_cast<uint8_t*>(reapedUrb->buffer);
             for (int p = 0; p < reapedUrb->number_of_packets; ++p) {
                 const auto& desc = reapedUrb->iso_frame_desc[p];
@@ -180,34 +177,45 @@ static void workerLoop(UvcEngineContext* ctx) {
                     uint8_t flags = buffer[offset + 1];
 
                     if (headerLen >= 2 && headerLen <= desc.actual_length) {
+                        uint8_t fid = flags & 1;
+                        bool isEof = (flags & 2) != 0;
                         const uint8_t* payload = buffer + offset + headerLen;
                         size_t payloadLen = desc.actual_length - headerLen;
 
                         if (payloadLen > 0) {
                             totalBytesReceived += payloadLen;
 
-                            // Nhận diện mốc SOI (0xFF, 0xD8) -> Khởi đầu khung hình mới
+                            // Nhận diện mốc SOI (0xFF, 0xD8) -> Bắt đầu ảnh mới
                             if (payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
-                                // Xóa bỏ khung hình cũ dở dang (tránh lỗi nháy nửa dưới hình)
                                 ctx->frameBuffer.clear();
                             }
 
                             if (ctx->frameBuffer.size() + payloadLen <= MAX_FRAME_SIZE) {
                                 ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                             }
-
-                            // Chỉ vẽ khung hình khi đạt MỐC KẾT THÚC CHUẨN EOI (0xFF, 0xD9) & Kích thước > 5000 bytes
-                            size_t bufSize = ctx->frameBuffer.size();
-                            if (bufSize >= 5000 &&
-                                ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8 &&
-                                ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
-
-                                deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
-                                ctx->frameCount++;
-                                ctx->fpsFrames++;
-                                ctx->frameBuffer.clear();
-                            }
                         }
+
+                        // Chỉ chốt khung ảnh khi nhận cờ UVC EOF hoặc đổi FID, và ảnh phải chứa đủ mốc EOI (0xFF, 0xD9)
+                        bool fidToggled = (ctx->lastFid != 0xFF && fid != ctx->lastFid);
+                        if (isEof || fidToggled) {
+                            size_t bufSize = ctx->frameBuffer.size();
+                            if (bufSize >= 8000 && ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8) {
+                                bool hasEoi = false;
+                                for (size_t k = bufSize; k >= 2 && k >= bufSize - 100; --k) {
+                                    if (ctx->frameBuffer[k - 2] == 0xFF && ctx->frameBuffer[k - 1] == 0xD9) {
+                                        hasEoi = true;
+                                        break;
+                                    }
+                                }
+                                if (hasEoi) {
+                                    deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
+                                    ctx->frameCount++;
+                                    ctx->fpsFrames++;
+                                }
+                            }
+                            ctx->frameBuffer.clear();
+                        }
+                        ctx->lastFid = fid;
                     }
                 }
             }
@@ -229,10 +237,6 @@ static void workerLoop(UvcEngineContext* ctx) {
             }
             ioctl(ctx->fd, USBDEVFS_SUBMITURB, reapedUrb);
         } else {
-            emptyReapCount++;
-            if (emptyReapCount % 2000 == 0) {
-                LOGI("⏳ Đang đợi dữ liệu ISOC từ USB Capture (Empty reap count: %d, errno=%d)...", emptyReapCount, errno);
-            }
             std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
     }

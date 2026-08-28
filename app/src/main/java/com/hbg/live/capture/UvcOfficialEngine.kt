@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -20,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Đảm bảo đồng bộ H.264 Encoder cho Facebook Live & Render xem trước sắc nét 100% không bị vệt nháy dưới.
+ * Tính toán tỷ lệ Fit-Center xem trước sắc nét 100% hoàn toàn không bị nháy hay rách hình.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -187,19 +188,32 @@ class UvcOfficialEngine(
         try {
             val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
             if (bitmap != null) {
-                // 1. Nạp khung hình Bitmap trực tiếp cho H.264 Encoder đẩy luồng lên Facebook Live
+                // 1. Nạp khung hình Bitmap cho H.264 Encoder đẩy luồng lên Facebook Live
                 h264Encoder?.encodeBitmap(bitmap)
 
-                // 2. Render khung hình lên SurfaceView xem trước
+                // 2. Render khung hình xem trước Fit-Center không bị biến dạng hay vệt nháy
                 val surface = holder.surface
                 if (surface != null && surface.isValid) {
                     val canvas = holder.lockCanvas()
                     if (canvas != null) {
-                        canvas.drawColor(Color.BLACK) // Xóa sạch bộ đệm đống nét tránh vệt nháy
-                        val srcRect = android.graphics.Rect(0, 0, bitmap.width, bitmap.height)
-                        val dstRect = android.graphics.Rect(0, 0, canvas.width, canvas.height)
-                        canvas.drawBitmap(bitmap, srcRect, dstRect, null)
-                        holder.unlockCanvasAndPost(canvas)
+                        try {
+                            val cw = canvas.width.toFloat()
+                            val ch = canvas.height.toFloat()
+                            val bw = bitmap.width.toFloat()
+                            val bh = bitmap.height.toFloat()
+
+                            val scale = minOf(cw / bw, ch / bh)
+                            val dw = bw * scale
+                            val dh = bh * scale
+                            val left = (cw - dw) / 2f
+                            val top = (ch - dh) / 2f
+
+                            canvas.drawColor(Color.BLACK)
+                            val dstRect = RectF(left, top, left + dw, top + dh)
+                            canvas.drawBitmap(bitmap, null, dstRect, null)
+                        } finally {
+                            holder.unlockCanvasAndPost(canvas)
+                        }
                     }
                 }
 
@@ -261,42 +275,45 @@ class UvcOfficialEngine(
             if (surface != null && surface.isValid) {
                 val canvas = holder.lockCanvas()
                 if (canvas != null) {
-                    canvas.drawColor(Color.BLACK)
-                    val w = canvas.width.toFloat()
-                    val h = canvas.height.toFloat()
+                    try {
+                        canvas.drawColor(Color.BLACK)
+                        val w = canvas.width.toFloat()
+                        val h = canvas.height.toFloat()
 
-                    // Vẽ dải sọc màu OBS Studio SMPTE Test Pattern phủ kín 100% khung hình
-                    val barColors = intArrayOf(
-                        Color.rgb(191, 191, 191), // White/Grey
-                        Color.rgb(191, 191, 0),   // Yellow
-                        Color.rgb(0, 191, 191),   // Cyan
-                        Color.rgb(0, 191, 0),     // Green
-                        Color.rgb(191, 0, 191),   // Magenta
-                        Color.rgb(191, 0, 0),     // Red
-                        Color.rgb(0, 0, 191)      // Blue
-                    )
+                        // Vẽ dải sọc màu OBS Studio SMPTE Test Pattern phủ kín 100% khung hình
+                        val barColors = intArrayOf(
+                            Color.rgb(191, 191, 191), // White/Grey
+                            Color.rgb(191, 191, 0),   // Yellow
+                            Color.rgb(0, 191, 191),   // Cyan
+                            Color.rgb(0, 191, 0),     // Green
+                            Color.rgb(191, 0, 191),   // Magenta
+                            Color.rgb(191, 0, 0),     // Red
+                            Color.rgb(0, 0, 191)      // Blue
+                        )
 
-                    val barWidth = w / barColors.size
-                    val paint = Paint().apply { style = Paint.Style.FILL }
+                        val barWidth = w / barColors.size
+                        val paint = Paint().apply { style = Paint.Style.FILL }
 
-                    for (i in barColors.indices) {
-                        paint.color = barColors[i]
-                        canvas.drawRect(i * barWidth, 0f, (i + 1) * barWidth, h * 0.82f, paint)
+                        for (i in barColors.indices) {
+                            paint.color = barColors[i]
+                            canvas.drawRect(i * barWidth, 0f, (i + 1) * barWidth, h * 0.85f, paint)
+                        }
+
+                        // Phần đáy đen hiển thị thông báo trạng thái
+                        paint.color = Color.BLACK
+                        canvas.drawRect(0f, h * 0.85f, w, h, paint)
+
+                        val textPaint = Paint().apply {
+                            color = Color.WHITE
+                            textSize = 34f
+                            textAlign = Paint.Align.CENTER
+                            isAntiAlias = true
+                            isFakeBoldText = true
+                        }
+                        canvas.drawText("⚡ CHỜ TÍN HIỆU TỪ CAM HDMI / SONY A7...", w / 2f, h * 0.94f, textPaint)
+                    } finally {
+                        holder.unlockCanvasAndPost(canvas)
                     }
-
-                    // Phần đáy đen hiển thị thông báo trạng thái
-                    paint.color = Color.BLACK
-                    canvas.drawRect(0f, h * 0.82f, w, h, paint)
-
-                    val textPaint = Paint().apply {
-                        color = Color.WHITE
-                        textSize = 34f
-                        textAlign = Paint.Align.CENTER
-                        isAntiAlias = true
-                        isFakeBoldText = true
-                    }
-                    canvas.drawText("⚡ CHỜ TÍN HIỆU TỪ CAM HDMI / SONY A7...", w / 2f, h * 0.93f, textPaint)
-                    holder.unlockCanvasAndPost(canvas)
                 }
             }
         } catch (e: Throwable) {}

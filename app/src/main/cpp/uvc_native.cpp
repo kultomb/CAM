@@ -53,7 +53,7 @@ static UvcEngineContext* g_ctx = nullptr;
 static std::mutex g_ctxMutex;
 
 static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t length) {
-    if (!ctx || !ctx->running || !data || length < 100) return;
+    if (!ctx || !ctx->running || !data || length < 5000) return;
 
     JNIEnv* env = nullptr;
     bool attached = false;
@@ -86,7 +86,7 @@ static void workerLoop(UvcEngineContext* ctx) {
     int altSetting = (ctx->altSetting > 0) ? ctx->altSetting : 1;
     int ifaceId = ctx->ifaceId;
 
-    LOGI("🟢 UVC Direct Render Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+    LOGI("🟢 UVC Precision Render Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          ctx->fd, ifaceId, targetEp, packetSize, altSetting);
 
     int claimRc = ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifaceId);
@@ -102,7 +102,7 @@ static void workerLoop(UvcEngineContext* ctx) {
         LOGE("❌ USBDEVFS_SETINTERFACE (iface=%d, alt=%d) errno=%d (%s)", ifaceId, altSetting, errno, strerror(errno));
     }
 
-    // Tự động thử nghiệm kích thước packetSize (1024 -> 512 -> 192 -> 128) nếu Kernel báo Message too long
+    // Tự động thử nghiệm các mốc packetSize (1024 -> 960 -> 768 -> 512 -> 384 -> 192 -> 128) nếu Kernel báo Message too long
     int sizesToTry[] = { packetSize, 1024, 960, 896, 768, 512, 384, 192, 128 };
     int workingPacketSize = packetSize;
 
@@ -131,7 +131,6 @@ static void workerLoop(UvcEngineContext* ctx) {
             LOGI("🟢 Đã tìm thấy kích thước Kernel PacketSize chấp thuận: %d bytes", workingPacketSize);
             break;
         } else if (errno != EMSGSIZE) {
-            // Lỗi khác EMSGSIZE nghĩa là URB đã được chấp nhận bởi host controller
             workingPacketSize = sizeCandidate;
             LOGI("🟢 Chấp thuận Kernel PacketSize: %d bytes (rc=%d, errno=%d)", workingPacketSize, rc, errno);
             break;
@@ -181,20 +180,15 @@ static void workerLoop(UvcEngineContext* ctx) {
                     uint8_t flags = buffer[offset + 1];
 
                     if (headerLen >= 2 && headerLen <= desc.actual_length) {
-                        uint8_t fid = flags & 1;
                         const uint8_t* payload = buffer + offset + headerLen;
                         size_t payloadLen = desc.actual_length - headerLen;
 
                         if (payloadLen > 0) {
                             totalBytesReceived += payloadLen;
 
-                            // Nhận diện JPEG SOI (0xFF, 0xD8) - Khởi đầu khung hình mới
+                            // Nhận diện mốc SOI (0xFF, 0xD8) -> Khởi đầu khung hình mới
                             if (payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
-                                if (!ctx->frameBuffer.empty() && ctx->frameBuffer.size() > 1000) {
-                                    deliverFrame(ctx, ctx->frameBuffer.data(), ctx->frameBuffer.size());
-                                    ctx->frameCount++;
-                                    ctx->fpsFrames++;
-                                }
+                                // Xóa bỏ khung hình cũ dở dang (tránh lỗi nháy nửa dưới hình)
                                 ctx->frameBuffer.clear();
                             }
 
@@ -202,25 +196,18 @@ static void workerLoop(UvcEngineContext* ctx) {
                                 ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                             }
 
-                            // Nhận diện JPEG EOI (0xFF, 0xD9) - Kết thúc khung hình
+                            // Chỉ vẽ khung hình khi đạt MỐC KẾT THÚC CHUẨN EOI (0xFF, 0xD9) & Kích thước > 5000 bytes
                             size_t bufSize = ctx->frameBuffer.size();
-                            if (bufSize >= 2 && ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
+                            if (bufSize >= 5000 &&
+                                ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8 &&
+                                ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
+
                                 deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
                                 ctx->frameCount++;
                                 ctx->fpsFrames++;
                                 ctx->frameBuffer.clear();
                             }
                         }
-
-                        if (fid != ctx->lastFid && ctx->lastFid != 0xFF) {
-                            if (!ctx->frameBuffer.empty() && ctx->frameBuffer.size() > 1000) {
-                                deliverFrame(ctx, ctx->frameBuffer.data(), ctx->frameBuffer.size());
-                                ctx->frameCount++;
-                                ctx->fpsFrames++;
-                                ctx->frameBuffer.clear();
-                            }
-                        }
-                        ctx->lastFid = fid;
                     }
                 }
             }

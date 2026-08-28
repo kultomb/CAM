@@ -53,7 +53,7 @@ static UvcEngineContext* g_ctx = nullptr;
 static std::mutex g_ctxMutex;
 
 static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t length) {
-    if (!ctx || !ctx->running || !data || length < 8000) return;
+    if (!ctx || !ctx->running || !data || length < 10000) return;
 
     JNIEnv* env = nullptr;
     bool attached = false;
@@ -174,48 +174,45 @@ static void workerLoop(UvcEngineContext* ctx) {
                 if (desc.actual_length > 2) {
                     int offset = p * packetSize;
                     uint8_t headerLen = buffer[offset];
-                    uint8_t flags = buffer[offset + 1];
 
                     if (headerLen >= 2 && headerLen <= desc.actual_length) {
-                        uint8_t fid = flags & 1;
-                        bool isEof = (flags & 2) != 0;
                         const uint8_t* payload = buffer + offset + headerLen;
                         size_t payloadLen = desc.actual_length - headerLen;
 
                         if (payloadLen > 0) {
                             totalBytesReceived += payloadLen;
 
-                            // Nhận diện mốc SOI (0xFF, 0xD8) -> Bắt đầu ảnh mới
+                            // Nhận diện mốc SOI (0xFF, 0xD8) -> Khởi đầu khung hình mới
                             if (payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
+                                size_t currentSize = ctx->frameBuffer.size();
+                                // Nếu đệm cũ đã nạp đủ kích thước (>10KB) và kết thúc chuẩn bằng EOI (0xFF, 0xD9)
+                                if (currentSize >= 10000 &&
+                                    ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8 &&
+                                    ctx->frameBuffer[currentSize - 2] == 0xFF && ctx->frameBuffer[currentSize - 1] == 0xD9) {
+
+                                    deliverFrame(ctx, ctx->frameBuffer.data(), currentSize);
+                                    ctx->frameCount++;
+                                    ctx->fpsFrames++;
+                                }
                                 ctx->frameBuffer.clear();
                             }
 
                             if (ctx->frameBuffer.size() + payloadLen <= MAX_FRAME_SIZE) {
                                 ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                             }
-                        }
 
-                        // Chỉ chốt khung ảnh khi nhận cờ UVC EOF hoặc đổi FID, và ảnh phải chứa đủ mốc EOI (0xFF, 0xD9)
-                        bool fidToggled = (ctx->lastFid != 0xFF && fid != ctx->lastFid);
-                        if (isEof || fidToggled) {
+                            // Kiểm tra mốc kết thúc chuẩn EOI (0xFF, 0xD9) đúng ở 2 bytes cuối cùng của khung ảnh
                             size_t bufSize = ctx->frameBuffer.size();
-                            if (bufSize >= 8000 && ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8) {
-                                bool hasEoi = false;
-                                for (size_t k = bufSize; k >= 2 && k >= bufSize - 100; --k) {
-                                    if (ctx->frameBuffer[k - 2] == 0xFF && ctx->frameBuffer[k - 1] == 0xD9) {
-                                        hasEoi = true;
-                                        break;
-                                    }
-                                }
-                                if (hasEoi) {
-                                    deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
-                                    ctx->frameCount++;
-                                    ctx->fpsFrames++;
-                                }
+                            if (bufSize >= 10000 &&
+                                ctx->frameBuffer[0] == 0xFF && ctx->frameBuffer[1] == 0xD8 &&
+                                ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
+
+                                deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
+                                ctx->frameCount++;
+                                ctx->fpsFrames++;
+                                ctx->frameBuffer.clear();
                             }
-                            ctx->frameBuffer.clear();
                         }
-                        ctx->lastFid = fid;
                     }
                 }
             }

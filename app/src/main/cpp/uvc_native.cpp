@@ -288,8 +288,10 @@ static void workerLoop(UvcEngineContext* ctx) {
     LOGI("⏹ UVC Direct Render Engine Dừng Thành Công.");
 }
 
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(
+static UvcEngineContext* gEngineCtx = nullptr;
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(
     JNIEnv* env,
     jobject instance,
     jint fd,
@@ -298,6 +300,15 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(
     jint maxPacketSize,
     jint altSetting,
     jobject surface) {
+
+    if (gEngineCtx != nullptr) {
+        gEngineCtx->running = false;
+        if (gEngineCtx->workerThread.joinable()) {
+            gEngineCtx->workerThread.join();
+        }
+        delete gEngineCtx;
+        gEngineCtx = nullptr;
+    }
 
     auto* ctx = new UvcEngineContext();
     ctx->fd = fd;
@@ -315,11 +326,49 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(
 
     ctx->running = true;
     ctx->workerThread = std::thread(workerLoop, ctx);
+    gEngineCtx = ctx;
 
     LOGI("🟢 Native StartEngine thành công (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          fd, ifaceId, epAddr, maxPacketSize, altSetting);
 
-    return reinterpret_cast<jlong>(ctx);
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_hbg_live_capture_UvcNativeBridge_nativeStopEngine(
+    JNIEnv* env,
+    jobject instance) {
+
+    if (gEngineCtx == nullptr) return;
+
+    gEngineCtx->running = false;
+    if (gEngineCtx->workerThread.joinable()) {
+        gEngineCtx->workerThread.join();
+    }
+
+    if (gEngineCtx->listenerRef != nullptr) {
+        env->DeleteGlobalRef(gEngineCtx->listenerRef);
+        gEngineCtx->listenerRef = nullptr;
+    }
+
+    delete gEngineCtx;
+    gEngineCtx = nullptr;
+    LOGI("⏹ Native StopEngine hoàn tất.");
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(
+    JNIEnv* env,
+    jobject instance,
+    jint fd,
+    jint ifaceId,
+    jint epAddr,
+    jint maxPacketSize,
+    jint altSetting,
+    jobject surface) {
+
+    Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(env, instance, fd, ifaceId, epAddr, maxPacketSize, altSetting, surface);
+    return reinterpret_cast<jlong>(gEngineCtx);
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -328,19 +377,5 @@ Java_com_hbg_live_capture_UvcNativeBridge_nativeStop(
     jobject instance,
     jlong contextPtr) {
 
-    if (contextPtr == 0) return;
-    auto* ctx = reinterpret_cast<UvcEngineContext*>(contextPtr);
-
-    ctx->running = false;
-    if (ctx->workerThread.joinable()) {
-        ctx->workerThread.join();
-    }
-
-    if (ctx->listenerRef != nullptr) {
-        env->DeleteGlobalRef(ctx->listenerRef);
-        ctx->listenerRef = nullptr;
-    }
-
-    delete ctx;
-    LOGI("⏹ Native StopEngine hoàn tất.");
+    Java_com_hbg_live_capture_UvcNativeBridge_nativeStopEngine(env, instance);
 }

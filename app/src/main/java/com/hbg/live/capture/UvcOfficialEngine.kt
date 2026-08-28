@@ -201,34 +201,39 @@ class UvcOfficialEngine(
 
     private fun renderJpegInternal(jpeg: ByteArray, holder: SurfaceHolder) {
         try {
-            val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
-            if (bitmap != null) {
-                // 1. Nạp khung hình Bitmap cho H.264 Encoder đẩy luồng lên Facebook Live
-                h264Encoder?.encodeBitmap(bitmap)
+            val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
+            if (decoded != null) {
+                lastValidBitmap = decoded
+                h264Encoder?.encodeBitmap(decoded)
+            } else {
+                Log.e("HBG-UVC", "❌ BitmapFactory.decodeByteArray trả về NULL cho mảng byte JPEG size=${jpeg.size}")
+            }
 
-                // 2. Render khung hình xem trước Fit-Center không bị biến dạng hay vệt nháy
-                val surface = holder.surface
-                if (surface != null && surface.isValid) {
-                    val canvas = holder.lockCanvas()
-                    if (canvas != null) {
-                        try {
-                            val cw = canvas.width.toFloat()
-                            val ch = canvas.height.toFloat()
-                            val bw = bitmap.width.toFloat()
-                            val bh = bitmap.height.toFloat()
+            val bitmapToDraw = lastValidBitmap ?: return
 
-                            val scale = minOf(cw / bw, ch / bh)
-                            val dw = bw * scale
-                            val dh = bh * scale
-                            val left = (cw - dw) / 2f
-                            val top = (ch - dh) / 2f
+            val surface = holder.surface
+            if (surface != null && surface.isValid) {
+                val canvas = holder.lockCanvas()
+                if (canvas != null) {
+                    try {
+                        val cw = canvas.width.toFloat()
+                        val ch = canvas.height.toFloat()
+                        val bw = bitmapToDraw.width.toFloat()
+                        val bh = bitmapToDraw.height.toFloat()
 
-                            canvas.drawColor(Color.BLACK)
-                            val dstRect = RectF(left, top, left + dw, top + dh)
-                            canvas.drawBitmap(bitmap, null, dstRect, null)
-                        } finally {
-                            holder.unlockCanvasAndPost(canvas)
-                        }
+                        val scale = minOf(cw / bw, ch / bh)
+                        val dw = bw * scale
+                        val dh = bh * scale
+                        val left = (cw - dw) / 2f
+                        val top = (ch - dh) / 2f
+
+                        canvas.drawColor(Color.BLACK)
+                        val dstRect = RectF(left, top, left + dw, top + dh)
+                        canvas.drawBitmap(bitmapToDraw, null, dstRect, null)
+                    } catch (e: Throwable) {
+                        Log.e("HBG-UVC", "❌ Surface Canvas drawBitmap failed", e)
+                    } finally {
+                        holder.unlockCanvasAndPost(canvas)
                     }
                 }
             }
@@ -246,7 +251,7 @@ class UvcOfficialEngine(
                 }
             }
         } catch (e: Throwable) {
-            logError("Lỗi renderJpegInternal", e)
+            Log.e("HBG-UVC", "❌ Surface render failed", e)
         }
     }
 

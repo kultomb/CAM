@@ -82,7 +82,7 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 
 static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     size_t sz = ctx->frameBuffer.size();
-    if (sz < 10000) return;
+    if (sz < 1000) return;
 
     // 1. Tìm mốc SOI (0xFF, 0xD8) chuẩn xác ở đầu khung ảnh
     size_t soiPos = 0;
@@ -96,12 +96,12 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     }
     if (!foundSoi) return;
 
-    // 2. Tìm mốc EOI (0xFF, 0xD9) chuẩn xác ở cuối khung ảnh
+    // 2. Tìm mốc EOI (0xFF, 0xD9) chuẩn xác xuất hiện ĐẦU TIÊN ngay sau mốc SOI
     size_t eoiPos = 0;
     bool foundEoi = false;
-    for (size_t i = sz; i >= soiPos + 2; --i) {
-        if (ctx->frameBuffer[i - 2] == 0xFF && ctx->frameBuffer[i - 1] == 0xD9) {
-            eoiPos = i;
+    for (size_t i = soiPos + 2; i + 1 < sz; ++i) {
+        if (ctx->frameBuffer[i] == 0xFF && ctx->frameBuffer[i + 1] == 0xD9) {
+            eoiPos = i + 2;
             foundEoi = true;
             break;
         }
@@ -109,7 +109,7 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     if (!foundEoi) return;
 
     size_t jpegLen = eoiPos - soiPos;
-    if (jpegLen >= 10000) {
+    if (jpegLen >= 1000) {
         deliverFrame(ctx, ctx->frameBuffer.data() + soiPos, jpegLen);
         ctx->frameCount++;
         ctx->fpsFrames++;
@@ -133,9 +133,9 @@ static void workerLoop(UvcEngineContext* ctx) {
     struct usbdevfs_setinterface setif;
     setif.interface = ifaceId;
     setif.altsetting = altSetting;
-    int setIfRc = ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
-    if (setIfRc < 0) {
-        LOGE("❌ USBDEVFS_SETINTERFACE (iface=%d, alt=%d) errno=%d (%s)", ifaceId, altSetting, errno, strerror(errno));
+    int setRc = ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
+    if (setRc < 0) {
+        LOGE("❌ USBDEVFS_SETINTERFACE (alt=%d) errno=%d (%s)", altSetting, errno, strerror(errno));
     }
 
     int sizesToTry[] = { packetSize, 1024, 960, 896, 768, 512, 384, 192, 128 };
@@ -193,10 +193,13 @@ static void workerLoop(UvcEngineContext* ctx) {
 
         int submitRc = ioctl(ctx->fd, USBDEVFS_SUBMITURB, urb);
         if (submitRc < 0) {
-            LOGE("❌ SUBMITURB URB[%d] (size=%d) errno=%d (%s)", i, packetSize, errno, strerror(errno));
+            LOGE("❌ URB [%d] SUBMIT FAILED! errno=%d (%s)", i, errno, strerror(errno));
         }
     }
 
+    ctx->lastFid = 0xFF;
+    ctx->frameCount = 0;
+    ctx->fpsFrames = 0;
     ctx->fpsStart = std::chrono::steady_clock::now();
     uint64_t totalBytesReceived = 0;
 
@@ -224,10 +227,13 @@ static void workerLoop(UvcEngineContext* ctx) {
                             bool fidToggled = (ctx->lastFid != 0xFF && fid != ctx->lastFid);
                             bool isEof = (headerFlags & 0x02) != 0;
 
-                            // 1. Khi FID đổi sang khung hình mới VÀ gói dữ liệu thực sự bắt đầu bằng SOI (0xFF, 0xD8)
-                            if (fidToggled && payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
-                                extractAndDeliverJpeg(ctx);
-                                ctx->frameBuffer.clear();
+                            // 1. Khi FID đổi sang khung hình mới: Chốt và xuất khung ảnh tích lũy trước đó
+                            if (fidToggled) {
+                                if (!ctx->frameBuffer.empty()) {
+                                    extractAndDeliverJpeg(ctx);
+                                    ctx->frameBuffer.clear();
+                                }
+                                ctx->lastFid = fid;
                             }
 
                             // 2. Nạp dữ liệu payload thuần khiết vào đệm
@@ -235,14 +241,11 @@ static void workerLoop(UvcEngineContext* ctx) {
                                 ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                             }
 
-                            // 3. Khi nhận cờ UVC EOF (0x02) hoặc FID đổi -> Chốt khung ảnh chuẩn mốc EOI
-                            if (isEof || fidToggled) {
+                            // 3. Khi nhận cờ UVC EOF (0x02): Chốt và xuất khung ảnh hiện tại
+                            if (isEof) {
                                 extractAndDeliverJpeg(ctx);
-                                if (isEof) {
-                                    ctx->frameBuffer.clear();
-                                }
+                                ctx->frameBuffer.clear();
                             }
-                            ctx->lastFid = fid;
                         }
                     }
                 }

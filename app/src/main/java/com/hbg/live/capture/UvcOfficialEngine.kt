@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Tự động dò tìm Endpoint ISOC/Bulk và Alternate Settings thích ứng với mọi USB Capture Card (MS2109, MacroSilicon, Elgato).
+ * Chuẩn hóa quy trình UVC Probe/Commit & Kích hoạt Alternate Setting 1 cho MS2109 USB Capture Card.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -114,7 +114,10 @@ class UvcOfficialEngine(
                     return@Thread
                 }
 
-                // Dò tìm Endpoint ISOC/Bulk khả dụng
+                // 1. Gửi UVC Probe & Commit Control Transfer TRƯỚC để chốt định dạng MJPEG
+                performFullProbeCommitDebug(connection, targetInterface.id)
+
+                // 2. Dò tìm Endpoint ISOC/Bulk khả dụng
                 var epAddr = 0x83
                 var maxPacketSize = 3072
 
@@ -129,9 +132,9 @@ class UvcOfficialEngine(
                     }
                 }
 
-                // Dò tìm Alternate Setting thích hợp
+                // 3. Ưu tiên Alternate Setting 1 cho MS2109 MJPEG ISOC Streaming
                 var altSetting = 1
-                val altSettingsToTry = intArrayOf(7, 6, 5, 4, 3, 2, 1)
+                val altSettingsToTry = intArrayOf(1, 2, 3, 4, 5, 6, 7)
                 for (alt in altSettingsToTry) {
                     val setOk = connection.setInterface(targetInterface)
                     if (setOk) {
@@ -140,8 +143,6 @@ class UvcOfficialEngine(
                         break
                     }
                 }
-
-                performFullProbeCommitDebug(connection, targetInterface.id)
 
                 usbConnection = connection
                 usbInterface = targetInterface
@@ -235,17 +236,29 @@ class UvcOfficialEngine(
 
     private fun performFullProbeCommitDebug(connection: UsbDeviceConnection, ifaceId: Int) {
         try {
+            // UVC 1.1 Video Probe & Commit Control Transfer (MJPEG 1920x1080 30fps)
             val probeData = byteArrayOf(
-                0x01, 0x00, 0x01, 0x01, 0x15, 0x16, 0x05, 0x00,
-                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x80.toByte(), 0x8D.toByte(), 0x00, 0x00, 0x00,
-                0x00, 0x00
+                0x01, 0x00, // bmHint
+                0x01,       // bFormatIndex (1 = MJPEG)
+                0x01,       // bFrameIndex (1 = 1920x1080)
+                0x15, 0x16, 0x05, 0x00, // dwFrameInterval (333333 = 30fps)
+                0x00, 0x00, // wKeyFrameRate
+                0x00, 0x00, // wPFrameRate
+                0x00, 0x00, // wCompQuality
+                0x00, 0x00, // wCompWindowSize
+                0x00, 0x00, // wDelay
+                0x00, 0x80.toByte(), 0x8D.toByte(), 0x00, // dwMaxVideoFrameSize
+                0x00, 0x0C, 0x00, 0x00  // dwMaxPayloadTransferSize (3072)
             )
 
+            // SET_CUR Probe (VS_PROBE_CONTROL = 0x0100)
             connection.controlTransfer(0x21, 0x01, 0x0100, ifaceId shl 8, probeData, probeData.size, 1000)
+            // GET_CUR Probe (VS_PROBE_CONTROL = 0x0100)
+            connection.controlTransfer(0xA1, 0x81, 0x0100, ifaceId shl 8, probeData, probeData.size, 1000)
+            // SET_CUR Commit (VS_COMMIT_CONTROL = 0x0200)
             connection.controlTransfer(0x21, 0x01, 0x0200, ifaceId shl 8, probeData, probeData.size, 1000)
 
-            logDebug("✅ Gửi UVC Video Probe & Commit Control Transfer THÀNH CÔNG!")
+            logDebug("✅ Chuẩn hóa UVC Video Probe & Commit Control Transfer THÀNH CÔNG!")
         } catch (e: Throwable) {
             logError("Lỗi UVC Probe/Commit", e)
         }

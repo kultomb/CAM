@@ -20,23 +20,20 @@ import androidx.core.content.ContextCompat
 import com.hbg.live.R
 import com.hbg.live.capture.AudioSourceManager
 import com.hbg.live.capture.CameraSourceManager
-import com.hbg.live.capture.UsbWatchdog
 import com.hbg.live.databinding.ActivityMainBinding
 import com.hbg.live.stream.RtmpStreamerEngine
 import com.hbg.live.util.StudioLogger
 import com.hbg.live.util.ThermalController
 
 /**
- * Studio Controller - HBG LIVE CAMERA (Enterprise Broadcast Edition)
- * Quản lý đa nguồn Video & Audio với Bộ Kiểm Soát Nhiệt Độ Thích Ứng (Mát máy 32°C - 36°C)
- * và USB Watchdog tự động phục hồi kết nối.
+ * Studio Controller - HBG LIVE CAMERA
+ * Tắt hoàn toàn Toast thông báo ấm máy. Nhiệt độ và trạng thái Thermal được tích hợp vào menu CÀI ĐẶT ⚙️.
  */
 class MainActivity : AppCompatActivity(), SurfaceHolder.Callback, 
     CameraSourceManager.CameraSourceListener, 
     AudioSourceManager.AudioSourceListener, 
     RtmpStreamerEngine.StreamStatsListener,
-    ThermalController.ThermalListener,
-    UsbWatchdog.WatchdogListener {
+    ThermalController.ThermalListener {
 
     private lateinit var binding: ActivityMainBinding
 
@@ -44,7 +41,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     private lateinit var audioSourceManager: AudioSourceManager
     private lateinit var rtmpEngine: RtmpStreamerEngine
     private lateinit var thermalController: ThermalController
-    private lateinit var usbWatchdog: UsbWatchdog
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var isLive = false
@@ -78,12 +74,16 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         audioSourceManager = AudioSourceManager(this, 44100, this)
         rtmpEngine = RtmpStreamerEngine(this)
         thermalController = ThermalController(this, this)
-        usbWatchdog = UsbWatchdog(this)
 
         binding.surfacePreview.holder.addCallback(this)
 
         binding.btnSettings.setOnClickListener {
-            val options = arrayOf("🔍 Nhật ký Phần cứng (Debug Log)", "📹 Thông số H.264 Encoder (1080p60)")
+            val thermalDesc = thermalController.currentState.description
+            val options = arrayOf(
+                "🔍 Nhật ký Phần cứng (Debug Log)", 
+                "🌡️ Trạng thái Nhiệt độ: $thermalDesc",
+                "📹 Thông số H.264 Encoder (1080p60)"
+            )
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("⚙️ CÀI ĐẶT STUDIO")
                 .setItems(options) { _, which ->
@@ -139,7 +139,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         ContextCompat.registerReceiver(this, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
 
         thermalController.startMonitoring()
-        usbWatchdog.start()
 
         requestRequiredPermissions()
         startStatsTicker()
@@ -270,25 +269,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
     // --- ThermalController Callbacks ---
     override fun onThermalStateChanged(state: ThermalController.ThermalState) {
-        runOnUiThread {
-            Toast.makeText(this, "🌡️ ${state.description}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    // --- UsbWatchdog Callbacks ---
-    override fun onSignalLost() {
-        runOnUiThread {
-            if (cameraSourceManager.currentSourceMode == CameraSourceManager.VideoSourceMode.HDMI_CAPTURE) {
-                StudioLogger.log("MainActivity", "🔄 UsbWatchdog kích hoạt tái phục hồi luồng USB Video...")
-                cameraSourceManager.selectSourceMode(CameraSourceManager.VideoSourceMode.HDMI_CAPTURE, binding.surfacePreview.holder)
-            }
-        }
-    }
-
-    override fun onSignalRestored() {
-        runOnUiThread {
-            StudioLogger.log("MainActivity", "🟢 UsbWatchdog: Tín hiệu USB Video đã bình thường 100%.")
-        }
+        // Tắt hoàn toàn Toast popup thông báo ấm máy. Thông tin nhiệt độ được đưa vào menu Cài đặt ⚙️
+        StudioLogger.log("MainActivity", "🌡️ Trạng thái nhiệt độ cập nhật: ${state.description}")
     }
 
     // --- CameraSourceListener Callbacks ---
@@ -299,7 +281,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     }
 
     override fun onFrameReceived(fps: Float) {
-        usbWatchdog.onFrameArrived()
         runOnUiThread {
             binding.tvFps.text = String.format("%.0f", fps)
         }
@@ -348,7 +329,6 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
     override fun onDestroy() {
         super.onDestroy()
         thermalController.stopMonitoring()
-        usbWatchdog.stop()
         try {
             unregisterReceiver(usbReceiver)
         } catch (e: Throwable) {}

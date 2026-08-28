@@ -51,8 +51,8 @@ class AacAudioEncoder(
                 audioSource,
                 MediaRecorder.AudioSource.CAMCORDER,
                 MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                MediaRecorder.AudioSource.UNPROCESSED
+                MediaRecorder.AudioSource.DEFAULT,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION
             )
 
             var record: AudioRecord? = null
@@ -67,7 +67,6 @@ class AacAudioEncoder(
                     )
                     if (r.state == AudioRecord.STATE_INITIALIZED) {
                         record = r
-                        Log.d(TAG, "🟢 Khởi tạo AudioRecord thành công với AudioSource: $src")
                         break
                     } else {
                         r.release()
@@ -76,124 +75,104 @@ class AacAudioEncoder(
             }
 
             if (record == null) {
-                Log.e(TAG, "❌ Không thể khởi tạo AudioRecord với bất kỳ nguồn âm thanh nào!")
+                Log.e(TAG, "❌ Không thể mở bất kỳ nguồn AudioRecord nào!")
                 return
             }
 
+            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount)
+            format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+            format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+
+            val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+
             audioRecord = record
-
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
-                setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
-                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
-            }
-
-            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
-            mediaCodec!!.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            mediaCodec!!.start()
-
-            audioRecord!!.startRecording()
+            mediaCodec = codec
             isRecording = true
+
+            record.startRecording()
 
             recordThread = Thread {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-                val pcmBuffer = ByteArray(2048)
+                val pcmBuffer = ByteArray(4096)
+                val bufferInfo = MediaCodec.BufferInfo()
 
                 while (isRecording) {
-                    val readBytes = audioRecord?.read(pcmBuffer, 0, pcmBuffer.size) ?: 0
+                    val readBytes = record.read(pcmBuffer, 0, pcmBuffer.size)
                     if (readBytes > 0) {
-                        val level = calculateRmsLevelPercent(pcmBuffer, readBytes)
+                        val level = calculatePcmLevel(pcmBuffer, readBytes)
                         listener.onAudioLevelChanged(level)
 
-                        encodePcm(pcmBuffer, readBytes)
+                        val inputBufferIndex = codec.dequeueInputBuffer(10000)
+                        if (inputBufferIndex >= 0) {
+                            val inputBuffer = codec.getInputBuffer(inputBufferIndex)
+                            if (inputBuffer != null) {
+                                inputBuffer.clear()
+                                inputBuffer.put(pcmBuffer, 0, readBytes)
+                                val pts = System.nanoTime() / 1000
+                                codec.queueInputBuffer(inputBufferIndex, 0, readBytes, pts, 0)
+                            }
+                        }
                     }
-                    drainEncoder()
+
+                    var outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+                    while (outputBufferIndex >= 0) {
+                        val outputBuffer = codec.getOutputBuffer(outputBufferIndex)
+                        if (outputBuffer != null && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                            if (bufferInfo.size > 0) {
+                                listener.onAacFrameAvailable(outputBuffer, bufferInfo)
+                            }
+                        }
+                        codec.releaseOutputBuffer(outputBufferIndex, false)
+                        outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+                    }
                 }
             }.apply {
-                name = "AacAudioRecordThread"
+                name = "AacAudioEncoderRecordThread"
                 start()
             }
 
-            Log.d(TAG, "🟢 Đã khởi chạy AAC Audio Encoder & VU Meter (44.1kHz Stereo @ 128kbps) thành công!")
+            Log.d(TAG, "🟢 AAC Audio Encoder Khởi Động Thành Công (44.1 kHz Stereo @ 128 kbps)")
         } catch (e: Throwable) {
-            Log.e(TAG, "Lỗi khởi chạy AAC Audio Encoder", e)
+            Log.e(TAG, "❌ Khởi động AacAudioEncoder thất bại", e)
         }
     }
 
-    private fun calculateRmsLevelPercent(pcmBuffer: ByteArray, readBytes: Int): Int {
+    private fun calculatePcmLevel(pcmData: ByteArray, size: Int): Int {
         var sum = 0.0
-        val sampleCount = readBytes / 2
-        for (i in 0 until sampleCount * 2 step 2) {
-            val sample = (pcmBuffer[i].toInt() and 0xFF) or (pcmBuffer[i + 1].toInt() shl 8)
-            val shortSample = sample.toShort().toDouble()
-            sum += shortSample * shortSample
+        val samples = size / 2
+        for (i in 0 until samples) {
+            val sample = (pcmData[i * 2 + 1].toInt() shl 8) or (pcmData[i * 2].toInt() and 0xFF)
+            sum += (sample * sample).toDouble()
         }
-        if (sampleCount <= 0) return 0
-        val rms = sqrt(sum / sampleCount)
-        val percent = ((rms / 32767.0) * 100 * 3.5).toInt()
-        return percent.coerceIn(0, 100)
-    }
-
-    private fun encodePcm(pcmData: ByteArray, length: Int) {
-        val codec = mediaCodec ?: return
-        val inputIndex = codec.dequeueInputBuffer(1000)
-        if (inputIndex >= 0) {
-            val inputBuffer = codec.getInputBuffer(inputIndex)
-            if (inputBuffer != null) {
-                inputBuffer.clear()
-                inputBuffer.put(pcmData, 0, length)
-                val presentationTimeUs = System.nanoTime() / 1000
-                codec.queueInputBuffer(inputIndex, 0, length, presentationTimeUs, 0)
-            }
-        }
-    }
-
-    private fun drainEncoder() {
-        val codec = mediaCodec ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
-
-        while (true) {
-            val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
-            if (outputIndex >= 0) {
-                val outputBuffer = codec.getOutputBuffer(outputIndex)
-                if (outputBuffer != null && bufferInfo.size > 0) {
-                    outputBuffer.position(bufferInfo.offset)
-                    outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-
-                    val aacBuffer = ByteBuffer.allocate(bufferInfo.size)
-                    aacBuffer.put(outputBuffer)
-                    aacBuffer.flip()
-
-                    val cloneInfo = MediaCodec.BufferInfo().apply {
-                        set(0, bufferInfo.size, bufferInfo.presentationTimeUs, bufferInfo.flags)
-                    }
-
-                    listener.onAacFrameAvailable(aacBuffer, cloneInfo)
-                }
-                codec.releaseOutputBuffer(outputIndex, false)
-            } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                break
-            }
-        }
+        if (samples == 0) return 0
+        val rms = sqrt(sum / samples)
+        val maxAmp = 32767.0
+        val percentage = (rms / maxAmp * 100).toInt()
+        return percentage.coerceIn(0, 100)
     }
 
     fun stop() {
-        if (!isRecording) return
         isRecording = false
+        try {
+            recordThread?.join(500)
+            recordThread = null
+        } catch (e: Throwable) {}
 
         try {
             audioRecord?.stop()
             audioRecord?.release()
+            audioRecord = null
         } catch (e: Throwable) {}
-        audioRecord = null
 
         try {
             mediaCodec?.stop()
             mediaCodec?.release()
+            mediaCodec = null
         } catch (e: Throwable) {}
-        mediaCodec = null
 
-        recordThread = null
-        Log.d(TAG, "Đã dừng AAC Audio Encoder")
+        Log.d(TAG, "⏹ Đã dừng AAC Audio Encoder")
     }
 }

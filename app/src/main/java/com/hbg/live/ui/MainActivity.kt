@@ -498,12 +498,8 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         h264Encoder = vEncoder
         cameraSourceManager.h264Encoder = vEncoder
 
-        // 2. Khởi tạo AAC Audio Encoder (44.1 kHz Stereo @ 128 kbps) - Sử dụng Camcorder Directional Micro
-        val targetAudioSource = if (audioSourceManager.currentAudioMode == AudioSourceManager.AudioSourceMode.HDMI_AUDIO) {
-            MediaRecorder.AudioSource.UNPROCESSED
-        } else {
-            MediaRecorder.AudioSource.CAMCORDER
-        }
+        // 2. Khởi tạo AAC Audio Encoder (44.1 kHz Stereo @ 128 kbps) - Nạp luồng AAC Audio chuẩn hóa cho Facebook Live
+        val targetAudioSource = MediaRecorder.AudioSource.CAMCORDER
 
         val aEncoder = AacAudioEncoder(
             sampleRate = 44100, 

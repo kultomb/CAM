@@ -502,10 +502,12 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         val targetAudioSource = MediaRecorder.AudioSource.CAMCORDER
 
         val aEncoder = AacAudioEncoder(
+            context = this,
             sampleRate = 44100, 
             channelCount = 2, 
             bitrate = 128000, 
             audioSource = targetAudioSource,
+            isHdmiAudioMode = (audioSourceManager.currentAudioMode == AudioSourceManager.AudioSourceMode.HDMI_AUDIO),
             listener = object : AacAudioEncoder.Listener {
                 override fun onAacFrameAvailable(buffer: ByteBuffer, info: MediaCodec.BufferInfo) {
                     rtmpEngine.sendAudioFrame(buffer, info)

@@ -1,7 +1,10 @@
 package com.hbg.live.stream
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -13,15 +16,16 @@ import java.nio.ByteBuffer
 import kotlin.math.sqrt
 
 /**
- * Enterprise AAC Audio Encoder (44.1 kHz Stereo / 128 kbps AAC-LC) cho Facebook Live & YouTube Live.
- * Tự động chọn nguồn Micro Camcorder directional mic (Camcorder Audio Source) tương thích 100% với Camera2 API.
- * Tính toán VU Meter Level (0-100%) hiển thị thanh sóng âm real-time và nạp luồng AAC Audio mượt mà.
+ * Enterprise AAC Audio Encoder (44.1/48 kHz Stereo / 128 kbps AAC-LC) cho Facebook Live & YouTube Live.
+ * Hỗ trợ tự động khóa cứng cổng vào USB Audio Class (UAC) từ HDMI Capture Card / Camcorder Microphone.
  */
 class AacAudioEncoder(
+    private val context: Context? = null,
     private val sampleRate: Int = 44100,
     private val channelCount: Int = 2,
     private val bitrate: Int = 128000,
-    private val audioSource: Int = MediaRecorder.AudioSource.CAMCORDER,
+    private val audioSource: Int = MediaRecorder.AudioSource.MIC,
+    private val isHdmiAudioMode: Boolean = false,
     private val listener: Listener
 ) {
     interface Listener {
@@ -44,34 +48,72 @@ class AacAudioEncoder(
         if (isRecording) return
         try {
             val channelConfig = if (channelCount == 2) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
-            val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
-            val bufferSize = maxOf(minBufferSize, 8192)
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
 
+            val audioManager = context?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            val inputDevices = if (android.os.Build.VERSION.SDK_INT >= 23 && audioManager != null) {
+                audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            } else emptyArray()
+
+            val usbAudioDevice = if (isHdmiAudioMode && android.os.Build.VERSION.SDK_INT >= 23) {
+                inputDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                    it.type == AudioDeviceInfo.TYPE_BUS
+                }
+            } else null
+
+            val sampleRatesToTry = intArrayOf(sampleRate, 48000, 44100)
             val sourcesToTry = intArrayOf(
                 audioSource,
-                MediaRecorder.AudioSource.CAMCORDER,
                 MediaRecorder.AudioSource.MIC,
-                MediaRecorder.AudioSource.DEFAULT,
-                MediaRecorder.AudioSource.VOICE_RECOGNITION
+                MediaRecorder.AudioSource.CAMCORDER,
+                MediaRecorder.AudioSource.DEFAULT
             )
 
             var record: AudioRecord? = null
-            for (src in sourcesToTry) {
-                try {
-                    val r = AudioRecord(
-                        src,
-                        sampleRate,
-                        channelConfig,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        bufferSize
-                    )
-                    if (r.state == AudioRecord.STATE_INITIALIZED) {
-                        record = r
-                        break
-                    } else {
-                        r.release()
-                    }
-                } catch (e: Throwable) {}
+            var actualSampleRate = sampleRate
+
+            for (sr in sampleRatesToTry) {
+                val minBufferSize = AudioRecord.getMinBufferSize(sr, channelConfig, audioFormat)
+                if (minBufferSize <= 0) continue
+                val bufferSize = maxOf(minBufferSize, 8192)
+
+                for (src in sourcesToTry) {
+                    try {
+                        val builder = if (android.os.Build.VERSION.SDK_INT >= 23) {
+                            AudioRecord.Builder()
+                                .setAudioSource(src)
+                                .setAudioFormat(
+                                    AudioFormat.Builder()
+                                        .setEncoding(audioFormat)
+                                        .setSampleRate(sr)
+                                        .setChannelMask(channelConfig)
+                                        .build()
+                                )
+                                .setBufferSizeInBytes(bufferSize)
+                        } else null
+
+                        if (builder != null && usbAudioDevice != null) {
+                            builder.setPreferredDevice(usbAudioDevice)
+                        }
+
+                        val r = builder?.build() ?: AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
+
+                        if (r.state == AudioRecord.STATE_INITIALIZED) {
+                            record = r
+                            actualSampleRate = sr
+                            if (usbAudioDevice != null && android.os.Build.VERSION.SDK_INT >= 23) {
+                                r.setPreferredDevice(usbAudioDevice)
+                                Log.d(TAG, "🟢 AacAudioEncoder khóa cứng USB Audio Class (UAC) HDMI Capture: ${usbAudioDevice.productName} ($sr Hz)")
+                            }
+                            break
+                        } else {
+                            r.release()
+                        }
+                    } catch (e: Throwable) {}
+                }
+                if (record != null) break
             }
 
             if (record == null) {
@@ -79,7 +121,7 @@ class AacAudioEncoder(
                 return
             }
 
-            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount)
+            val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, actualSampleRate, channelCount)
             format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -134,7 +176,7 @@ class AacAudioEncoder(
                 start()
             }
 
-            Log.d(TAG, "🟢 AAC Audio Encoder Khởi Động Thành Công (44.1 kHz Stereo @ 128 kbps)")
+            Log.d(TAG, "🟢 AAC Audio Encoder Khởi Động Thành Công ($actualSampleRate Hz Stereo @ 128 kbps)")
         } catch (e: Throwable) {
             Log.e(TAG, "❌ Khởi động AacAudioEncoder thất bại", e)
         }

@@ -14,7 +14,7 @@ import kotlin.math.sqrt
 /**
  * Enterprise Audio Source Manager - HBG LIVE CAMERA
  * Hỗ trợ chuyển đổi linh hoạt nguồn Âm thanh Livestream:
- * 1. HDMI_AUDIO: Tiếng từ HDMI Capture Card / Bàn trộn hình qua USB Audio Class (UAC)
+ * 1. HDMI_AUDIO: Tiếng từ HDMI Capture Card / Bàn trộn hình qua USB Audio Class (UAC) 48kHz
  * 2. PHONE_MIC: Tiếng từ Micro Định Hướng Camcorder Điện Thoại
  */
 class AudioSourceManager(
@@ -56,57 +56,73 @@ class AudioSourceManager(
     private fun startRecordingForMode(mode: AudioSourceMode) {
         val channelConfig = AudioFormat.CHANNEL_IN_STEREO
         val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        val bufferSize = maxOf(minBufferSize, 8192)
 
+        val sampleRatesToTry = intArrayOf(48000, 44100)
         val sourcesToTry = intArrayOf(
-            MediaRecorder.AudioSource.CAMCORDER,
             MediaRecorder.AudioSource.MIC,
+            MediaRecorder.AudioSource.CAMCORDER,
             MediaRecorder.AudioSource.DEFAULT,
             MediaRecorder.AudioSource.VOICE_RECOGNITION
         )
 
+        val inputDevices = if (android.os.Build.VERSION.SDK_INT >= 23) {
+            audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+        } else emptyArray()
+
+        val usbAudioDevice = if (mode == AudioSourceMode.HDMI_AUDIO && android.os.Build.VERSION.SDK_INT >= 23) {
+            inputDevices.firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                it.type == AudioDeviceInfo.TYPE_USB_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_BUS
+            }
+        } else null
+
         var record: AudioRecord? = null
-        for (src in sourcesToTry) {
-            try {
-                val r = AudioRecord(
-                    src,
-                    sampleRate,
-                    channelConfig,
-                    audioFormat,
-                    bufferSize
-                )
-                if (r.state == AudioRecord.STATE_INITIALIZED) {
-                    record = r
-                    break
-                } else {
-                    r.release()
-                }
-            } catch (e: Throwable) {}
+
+        for (sr in sampleRatesToTry) {
+            val minBufferSize = AudioRecord.getMinBufferSize(sr, channelConfig, audioFormat)
+            if (minBufferSize <= 0) continue
+            val bufferSize = maxOf(minBufferSize, 8192)
+
+            for (src in sourcesToTry) {
+                try {
+                    val builder = if (android.os.Build.VERSION.SDK_INT >= 23) {
+                        AudioRecord.Builder()
+                            .setAudioSource(src)
+                            .setAudioFormat(
+                                AudioFormat.Builder()
+                                    .setEncoding(audioFormat)
+                                    .setSampleRate(sr)
+                                    .setChannelMask(channelConfig)
+                                    .build()
+                            )
+                            .setBufferSizeInBytes(bufferSize)
+                    } else null
+
+                    if (builder != null && usbAudioDevice != null) {
+                        builder.setPreferredDevice(usbAudioDevice)
+                    }
+
+                    val r = builder?.build() ?: AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
+
+                    if (r.state == AudioRecord.STATE_INITIALIZED) {
+                        record = r
+                        if (usbAudioDevice != null && android.os.Build.VERSION.SDK_INT >= 23) {
+                            r.setPreferredDevice(usbAudioDevice)
+                            StudioLogger.log(TAG, "🟢 Khóa cứng thiết bị thu âm USB Audio Class (UAC) Capture Card: ${usbAudioDevice.productName} ($sr Hz)")
+                        }
+                        break
+                    } else {
+                        r.release()
+                    }
+                } catch (e: Throwable) {}
+            }
+            if (record != null) break
         }
 
         if (record == null) {
             StudioLogger.log(TAG, "❌ Không thể khởi tạo AudioRecord với bất kỳ nguồn âm thanh nào!")
             return
-        }
-
-        // Nếu người dùng chọn HDMI_AUDIO, ưu tiên ép đường dẫn âm thanh sang USB Audio Class (UAC) Capture Card
-        if (android.os.Build.VERSION.SDK_INT >= 23 && mode == AudioSourceMode.HDMI_AUDIO) {
-            try {
-                val inputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
-                val usbAudioDevice = inputDevices.firstOrNull {
-                    it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
-                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET
-                }
-                if (usbAudioDevice != null) {
-                    record.setPreferredDevice(usbAudioDevice)
-                    StudioLogger.log(TAG, "🟢 Kích hoạt thu âm trực tiếp từ USB Audio Class (UAC) HDMI Capture: ${usbAudioDevice.productName}")
-                } else {
-                    StudioLogger.log(TAG, "ℹ️ Chưa thấy USB Audio Class riêng, sử dụng micro mặc định hệ thống.")
-                }
-            } catch (e: Throwable) {
-                StudioLogger.log(TAG, "Cảnh báo chỉ định thiết bị USB Audio: ${e.message}")
-            }
         }
 
         try {

@@ -125,6 +125,7 @@ class CameraSourceManager(
         currentSourceMode = mode
         currentZoomRatio = zoomRatio
         stopAllSources()
+        resetSurfaceFormatForCamera2(holder)
 
         when (mode) {
             VideoSourceMode.HDMI_CAPTURE -> {
@@ -153,12 +154,10 @@ class CameraSourceManager(
             }
             VideoSourceMode.PHONE_BACK -> {
                 StudioLogger.log(TAG, "Chuyển Nguồn Video -> Camera Sau Điện Thoại (${zoomRatio}x)")
-                resetSurfaceFormatForCamera2(holder)
                 openPhoneCamera(CameraCharacteristics.LENS_FACING_BACK, holder, targetCameraId, zoomRatio)
             }
             VideoSourceMode.PHONE_FRONT -> {
                 StudioLogger.log(TAG, "Chuyển Nguồn Video -> Camera Trước Điện Thoại")
-                resetSurfaceFormatForCamera2(holder)
                 openPhoneCamera(CameraCharacteristics.LENS_FACING_FRONT, holder, targetCameraId, 1.0f)
             }
         }

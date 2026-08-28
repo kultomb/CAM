@@ -41,6 +41,18 @@ class AacAudioEncoder(
 
     companion object {
         private const val TAG = "AacAudioEncoder"
+
+        fun applyPreferredDevice(record: AudioRecord, device: AudioDeviceInfo): Boolean {
+            return try {
+                if (android.os.Build.VERSION.SDK_INT >= 23) {
+                    val method = AudioRecord::class.java.getMethod("setPreferredDevice", AudioDeviceInfo::class.java)
+                    val result = method.invoke(record, device) as? Boolean
+                    result ?: false
+                } else false
+            } catch (e: Throwable) {
+                false
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -78,43 +90,19 @@ class AacAudioEncoder(
 
                 for (src in sourcesToTry) {
                     try {
-                        if (android.os.Build.VERSION.SDK_INT >= 23) {
-                            val builder = AudioRecord.Builder()
-                                .setAudioSource(src)
-                                .setAudioFormat(
-                                    AudioFormat.Builder()
-                                        .setEncoding(audioFormat)
-                                        .setSampleRate(sr)
-                                        .setChannelMask(channelConfig)
-                                        .build()
-                                )
-                                .setBufferSizeInBytes(bufferSize)
-
+                        val r = AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
+                        if (r.state == AudioRecord.STATE_INITIALIZED) {
+                            record = r
+                            actualSampleRate = sr
                             if (usbAudioDevice != null) {
-                                builder.setPreferredDevice(usbAudioDevice)
-                            }
-
-                            val r = builder.build()
-                            if (r.state == AudioRecord.STATE_INITIALIZED) {
-                                record = r
-                                actualSampleRate = sr
-                                if (usbAudioDevice != null) {
-                                    r.setPreferredDevice(usbAudioDevice)
+                                val ok = applyPreferredDevice(r, usbAudioDevice)
+                                if (ok) {
                                     Log.d(TAG, "🟢 AacAudioEncoder khóa cứng USB Audio Class (UAC) HDMI Capture: ${usbAudioDevice.productName} ($sr Hz)")
                                 }
-                                break
-                            } else {
-                                r.release()
                             }
+                            break
                         } else {
-                            val r = AudioRecord(src, sr, channelConfig, audioFormat, bufferSize)
-                            if (r.state == AudioRecord.STATE_INITIALIZED) {
-                                record = r
-                                actualSampleRate = sr
-                                break
-                            } else {
-                                r.release()
-                            }
+                            r.release()
                         }
                     } catch (e: Throwable) {}
                 }

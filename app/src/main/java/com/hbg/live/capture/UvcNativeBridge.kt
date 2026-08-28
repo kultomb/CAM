@@ -3,6 +3,9 @@ package com.hbg.live.capture
 import android.util.Log
 import android.view.Surface
 
+/**
+ * JNI Native Bridge - Kết nối trực tiếp Kotlin UvcOfficialEngine tới C++ Native ISO Transfer Engine (libhbg_uvc.so).
+ */
 class UvcNativeBridge(
     private val listener: Listener
 ) {
@@ -18,27 +21,27 @@ class UvcNativeBridge(
         init {
             try {
                 System.loadLibrary("hbg_uvc")
+                Log.d(TAG, "🟢 Đã nạp thành công thư viện C++ Native: libhbg_uvc.so")
             } catch (e: Throwable) {
                 Log.e(TAG, "Lỗi nạp thư viện hbg_uvc", e)
             }
         }
     }
 
-    private external fun nativeStart(fd: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Int
-    private external fun nativeStop()
-    private external fun nativeIsRunning(): Boolean
+    private external fun nativeStartEngine(fd: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Boolean
+    private external fun nativeStopEngine()
 
     fun start(fd: Int, epAddr: Int, maxPacketSize: Int, altSetting: Int, surface: Surface?): Boolean {
-        Log.d(TAG, "nativeStart(fd=$fd, epAddr=0x${Integer.toHexString(epAddr)}, maxPacketSize=$maxPacketSize, alt=$altSetting)")
+        Log.d(TAG, "nativeStartEngine(fd=$fd, epAddr=0x${Integer.toHexString(epAddr)}, maxPacketSize=$maxPacketSize, alt=$altSetting)")
         val result = try {
-            nativeStart(fd, epAddr, maxPacketSize, altSetting, surface)
+            nativeStartEngine(fd, epAddr, maxPacketSize, altSetting, surface)
         } catch (e: Throwable) {
-            Log.e(TAG, "Lỗi nativeStart", e)
-            -99
+            Log.e(TAG, "Lỗi nativeStartEngine", e)
+            false
         }
 
-        if (result != 0) {
-            listener.onNativeError("Native UVC start failed: $result")
+        if (!result) {
+            listener.onNativeError("Native UVC startEngine failed")
             return false
         }
         return true
@@ -46,22 +49,9 @@ class UvcNativeBridge(
 
     fun stop() {
         try {
-            nativeStop()
+            nativeStopEngine()
         } catch (e: Throwable) {
-            Log.e(TAG, "nativeStop failed", e)
+            Log.e(TAG, "nativeStopEngine failed", e)
         }
-    }
-
-    fun isRunning(): Boolean {
-        return try {
-            nativeIsRunning()
-        } catch (_: Throwable) {
-            false
-        }
-    }
-
-    @Suppress("unused")
-    fun onNativeFrame(jpeg: ByteArray) {
-        listener.onNativeFrame(jpeg)
     }
 }

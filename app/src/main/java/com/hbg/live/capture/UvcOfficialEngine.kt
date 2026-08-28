@@ -16,9 +16,9 @@ import com.hbg.live.util.StudioLogger
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * UvcOfficialEngine V13 - Ultra Fast Realtime Zero-Lag Frame Pipeline:
- * Tối ưu hóa bỏ qua khung hình tồn đọng (Frame Dropping) để giữ 100% độ mượt 60 FPS realtime, 
- * triệt tiêu hoàn toàn hiện tượng giật lag và đen màn hình sau một thời gian phát.
+ * UvcOfficialEngine V14 - Ultra Sharp 32-bit ARGB_8888 & High-Efficiency Hardware Pipeline:
+ * Giải mã ảnh chất lượng cao 32-bit ARGB_8888 nét căng rực rỡ từ Sony A73 / Capture Card, 
+ * kết hợp với cơ chế Frame-Dropping mượt mà 60 FPS giúp phát livestream nhẹ mạng chuẩn HD 1080p.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -38,9 +38,9 @@ class UvcOfficialEngine(
     @Volatile private var isStreaming = false
     private val isRendering = AtomicBoolean(false)
 
-    // Tối ưu hóa giải mã Bitmap tốc độ cao
+    // Tối ưu giải mã hình ảnh 32-bit ARGB_8888 cho độ nét căng sắc nét 100% chuẩn màu Studio
     private val decodeOptions = BitmapFactory.Options().apply {
-        inPreferredConfig = Bitmap.Config.RGB_565 // Dùng 16-bit RGB_565 tiết kiệm 50% bộ nhớ & tăng 200% tốc độ vẽ
+        inPreferredConfig = Bitmap.Config.ARGB_8888
         inSampleSize = 1
         inMutable = true
     }
@@ -64,7 +64,7 @@ class UvcOfficialEngine(
         clearSurfaceWithLoading(holder)
 
         Thread {
-            logDebug("=== [KHỞI ĐỘNG NATIVE 16KB ALIGNED ENGINE ZERO-LAG] ===")
+            logDebug("=== [KHỞI ĐỘNG NATIVE 16KB ALIGNED ENGINE 32-BIT ARGB] ===")
             logDebug("Thiết bị: ${device.deviceName} (VID: 0x${Integer.toHexString(device.vendorId)}, PID: 0x${Integer.toHexString(device.productId)})")
 
             if (!usbManager.hasPermission(device)) {
@@ -170,11 +170,10 @@ class UvcOfficialEngine(
             return
         }
 
-        logDebug("🟢 ZERO-LAG 16KB NATIVE ISO STREAM STARTED SUCCESSFULLY!")
+        logDebug("🟢 32-BIT ARGB 16KB NATIVE ISO STREAM STARTED SUCCESSFULLY!")
     }
 
     private fun renderJpeg(jpeg: ByteArray, holder: SurfaceHolder) {
-        // Tối ưu hóa Frame-Dropping: Nếu UI Thread đang bận vẽ khung hình trước, bỏ qua ngay lập tức để giữ 100% độ mượt
         if (!isRendering.compareAndSet(false, true)) {
             return
         }

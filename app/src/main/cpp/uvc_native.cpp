@@ -84,7 +84,7 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     size_t sz = ctx->frameBuffer.size();
     if (sz < 10000) return;
 
-    // 1. Tìm vị trí mốc SOI (0xFF, 0xD8) chuẩn xác
+    // 1. Tìm mốc SOI (0xFF, 0xD8) chuẩn xác ở đầu khung ảnh
     size_t soiPos = 0;
     bool foundSoi = false;
     for (size_t i = 0; i + 1 < sz; ++i) {
@@ -96,7 +96,7 @@ static void extractAndDeliverJpeg(UvcEngineContext* ctx) {
     }
     if (!foundSoi) return;
 
-    // 2. Tìm vị trí mốc EOI (0xFF, 0xD9) chuẩn xác ở cuối khung ảnh
+    // 2. Tìm mốc EOI (0xFF, 0xD9) chuẩn xác ở cuối khung ảnh
     size_t eoiPos = 0;
     bool foundEoi = false;
     for (size_t i = sz; i >= soiPos + 2; --i) {
@@ -220,24 +220,29 @@ static void workerLoop(UvcEngineContext* ctx) {
                         if (payloadLen > 0) {
                             totalBytesReceived += payloadLen;
 
-                            // Nhận diện mốc SOI (0xFF, 0xD8) -> Khởi đầu khung hình mới
-                            if (payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
+                            uint8_t fid = headerFlags & 0x01;
+                            bool fidToggled = (ctx->lastFid != 0xFF && fid != ctx->lastFid);
+                            bool isEof = (headerFlags & 0x02) != 0;
+
+                            // 1. Khi FID đổi sang khung hình mới VÀ gói dữ liệu thực sự bắt đầu bằng SOI (0xFF, 0xD8)
+                            if (fidToggled && payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
                                 extractAndDeliverJpeg(ctx);
                                 ctx->frameBuffer.clear();
                             }
 
+                            // 2. Nạp dữ liệu payload thuần khiết vào đệm
                             if (ctx->frameBuffer.size() + payloadLen <= MAX_FRAME_SIZE) {
                                 ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                             }
 
-                            // Kiểm tra xem đã nạp đủ mốc EOI (0xFF, 0xD9) ở cuối khung ảnh chưa
-                            size_t bufSize = ctx->frameBuffer.size();
-                            if (bufSize >= 10000 &&
-                                ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
-
+                            // 3. Khi nhận cờ UVC EOF (0x02) hoặc FID đổi -> Chốt khung ảnh chuẩn mốc EOI
+                            if (isEof || fidToggled) {
                                 extractAndDeliverJpeg(ctx);
-                                ctx->frameBuffer.clear();
+                                if (isEof) {
+                                    ctx->frameBuffer.clear();
+                                }
                             }
+                            ctx->lastFid = fid;
                         }
                     }
                 }

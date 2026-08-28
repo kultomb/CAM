@@ -29,7 +29,7 @@ struct UvcEngineContext {
     int fd = -1;
     int epAddr = 0x83;
     int maxPacketSize = 3072;
-    int altSetting = 3;
+    int altSetting = 1;
 
     std::atomic<bool> running{false};
     std::thread workerThread;
@@ -79,18 +79,21 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 }
 
 static void workerLoop(UvcEngineContext* ctx) {
-    int packetSize = 3072;
-    int urbBufferSize = ISO_PACKETS * packetSize;
-    int targetEp = 0x83;
+    int packetSize = (ctx->maxPacketSize > 0) ? ctx->maxPacketSize : 3072;
+    int targetEp = (ctx->epAddr != 0) ? ctx->epAddr : 0x83;
+    int altSetting = (ctx->altSetting > 0) ? ctx->altSetting : 1;
 
-    LOGI("🟢 16KB UVC Direct Render Engine START (fd=%d, ep=0x%02X)", ctx->fd, targetEp);
+    int urbBufferSize = ISO_PACKETS * packetSize;
+
+    LOGI("🟢 16KB UVC Direct Render Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+         ctx->fd, targetEp, packetSize, altSetting);
 
     int ifnum = 1;
     ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifnum);
 
     struct usbdevfs_setinterface setif;
     setif.interface = 1;
-    setif.altsetting = ctx->altSetting;
+    setif.altsetting = altSetting;
     ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
 
     size_t urbStructSize = sizeof(struct usbdevfs_urb) + (ISO_PACKETS * sizeof(struct usbdevfs_iso_packet_desc));
@@ -128,108 +131,102 @@ static void workerLoop(UvcEngineContext* ctx) {
                     uint8_t flags = buffer[offset + 1];
 
                     if (headerLen >= 2 && headerLen <= desc.actual_length) {
-                        bool fid = (flags & 0x01) != 0;
-                        bool err = (flags & 0x40) != 0;
+                        uint8_t fid = flags & 1;
+                        const uint8_t* payload = buffer + offset + headerLen;
+                        size_t payloadLen = desc.actual_length - headerLen;
 
-                        if (!err) {
-                            uint8_t currentFid = fid ? 1 : 0;
-                            if (ctx->lastFid != 0xFF && ctx->lastFid != currentFid) {
-                                std::vector<uint8_t> frame;
-                                {
-                                    std::lock_guard<std::mutex> lock(ctx->frameMutex);
-                                    frame.swap(ctx->frameBuffer);
-                                }
-                                if (frame.size() > 500) {
-                                    ctx->fpsFrames++;
-                                    deliverFrame(ctx, frame.data(), frame.size());
+                        if (fid != ctx->lastFid && ctx->lastFid != 0xFF) {
+                            if (!ctx->frameBuffer.empty()) {
+                                deliverFrame(ctx, ctx->frameBuffer.data(), ctx->frameBuffer.size());
+                                ctx->frameCount++;
+                                ctx->fpsFrames++;
+
+                                auto now = std::chrono::steady_clock::now();
+                                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
+                                if (elapsed >= 1000) {
+                                    float fps = (ctx->fpsFrames * 1000.0f) / elapsed;
+                                    LOGI("📊 UVC Native FPS: %.1f (Tổng khung hình: %llu)", fps, (unsigned long long)ctx->frameCount);
+                                    ctx->fpsStart = now;
+                                    ctx->fpsFrames = 0;
                                 }
                             }
-                            ctx->lastFid = currentFid;
+                            ctx->frameBuffer.clear();
+                        }
+                        ctx->lastFid = fid;
 
-                            int payloadLen = desc.actual_length - headerLen;
-                            if (payloadLen > 0) {
-                                std::lock_guard<std::mutex> lock(ctx->frameMutex);
-                                if (ctx->frameBuffer.size() + payloadLen < MAX_FRAME_SIZE) {
-                                    ctx->frameBuffer.insert(ctx->frameBuffer.end(), buffer + offset + headerLen, buffer + offset + desc.actual_length);
-                                } else {
-                                    ctx->frameBuffer.clear();
-                                }
-                            }
+                        if (payloadLen > 0 && ctx->frameBuffer.size() + payloadLen <= MAX_FRAME_SIZE) {
+                            ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
                         }
                     }
                 }
             }
 
-            // Resubmit URB
-            if (ctx->running) {
-                ioctl(ctx->fd, USBDEVFS_SUBMITURB, reapedUrb);
+            for (int p = 0; p < ISO_PACKETS; ++p) {
+                reapedUrb->iso_frame_desc[p].length = packetSize;
+                reapedUrb->iso_frame_desc[p].actual_length = 0;
+                reapedUrb->iso_frame_desc[p].status = 0;
             }
+            ioctl(ctx->fd, USBDEVFS_SUBMITURB, reapedUrb);
         } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
-
-        auto now = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
-        if (elapsed >= 1000) {
-            LOGI("🟢 [16KB UVC REALTIME ISO ENGINE] FPS=%d", ctx->fpsFrames);
-            ctx->fpsFrames = 0;
-            ctx->fpsStart = now;
+            std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
     }
 
-    ioctl(ctx->fd, USBDEVFS_RELEASEINTERFACE, &ifnum);
-    LOGI("USBDEVFS_RELEASEINTERFACE Interface 1 released cleanly");
+    for (int i = 0; i < URB_COUNT; ++i) {
+        struct usbdevfs_urb* urb = reinterpret_cast<struct usbdevfs_urb*>(urbMemories[i].data());
+        ioctl(ctx->fd, USBDEVFS_DISCARDURB, urb);
+    }
+    LOGI("⏹ UVC Direct Render Engine Dừng Thành Công.");
 }
 
-extern "C" JNIEXPORT jint JNICALL
-Java_com_hbg_live_capture_UvcNativeBridge_nativeStart(JNIEnv* env, jobject thiz, jint fd, jint epAddr, jint maxPacketSize, jint altSetting, jobject) {
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_hbg_live_capture_UvcNativeBridge_nativeStartEngine(
+    JNIEnv* env, jobject thiz, jint fd, jint epAddr, jint maxPacketSize, jint altSetting, jobject surface) {
+
     std::lock_guard<std::mutex> lock(g_ctxMutex);
-    if (g_ctx) return -1;
+    if (g_ctx != nullptr) {
+        LOGE("Engine native đang chạy, dừng phiên trước...");
+        g_ctx->running = false;
+        if (g_ctx->workerThread.joinable()) {
+            g_ctx->workerThread.join();
+        }
+        delete g_ctx;
+        g_ctx = nullptr;
+    }
 
-    UvcEngineContext* ctx = new UvcEngineContext();
+    auto ctx = new UvcEngineContext();
     ctx->fd = fd;
-    ctx->epAddr = 0x83;
-    ctx->maxPacketSize = 3072;
+    ctx->epAddr = epAddr;
+    ctx->maxPacketSize = maxPacketSize;
     ctx->altSetting = altSetting;
-
     env->GetJavaVM(&ctx->jvm);
     ctx->bridgeObject = env->NewGlobalRef(thiz);
 
-    jclass clazz = env->GetObjectClass(thiz);
-    ctx->onFrameMethod = env->GetMethodID(clazz, "onNativeFrame", "([B)V");
-    env->DeleteLocalRef(clazz);
+    jclass cls = env Gerard = env->GetObjectClass(thiz);
+    ctx->onFrameMethod = env->GetMethodID(cls, "onNativeFrame", "([B)V");
 
     ctx->running = true;
     ctx->workerThread = std::thread(workerLoop, ctx);
 
     g_ctx = ctx;
-    return 0;
+    LOGI("🟢 Native StartEngine thành công (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+         fd, epAddr, maxPacketSize, altSetting);
+    return JNI_TRUE;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_hbg_live_capture_UvcNativeBridge_nativeStop(JNIEnv* env, jobject) {
+Java_com_hbg_live_capture_UvcNativeBridge_nativeStopEngine(JNIEnv* env, jobject thiz) {
     std::lock_guard<std::mutex> lock(g_ctxMutex);
-    if (!g_ctx) return;
-    UvcEngineContext* ctx = g_ctx;
-    g_ctx = nullptr;
-
-    ctx->running = false;
-    if (ctx->workerThread.joinable()) {
-        ctx->workerThread.join();
+    if (g_ctx != nullptr) {
+        g_ctx->running = false;
+        if (g_ctx->workerThread.joinable()) {
+            g_ctx->workerThread.join();
+        }
+        if (g_ctx->bridgeObject) {
+            env->DeleteGlobalRef(g_ctx->bridgeObject);
+        }
+        delete g_ctx;
+        g_ctx = nullptr;
+        LOGI("⏹ Native StopEngine hoàn tất.");
     }
-    if (ctx->bridgeObject) {
-        env->DeleteGlobalRef(ctx->bridgeObject);
-    }
-    delete ctx;
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_hbg_live_capture_UvcNativeBridge_nativeIsRunning(JNIEnv*, jobject) {
-    std::lock_guard<std::mutex> lock(g_ctxMutex);
-    return g_ctx && g_ctx->running;
-}
-
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM*, void*) {
-    LOGI("HBG UVC Direct ISO Render Native loaded");
-    return JNI_VERSION_1_6;
 }

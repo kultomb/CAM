@@ -33,7 +33,7 @@ import java.nio.ByteBuffer
 /**
  * Studio Controller - HBG LIVE CAMERA (Chuyên Nghiệp Đạt Chuẩn OBS / CameraFi Live)
  * Hỗ Trợ Phát Trực Tiếp Đan Luồng Kép (H.264 Video + AAC Audio) Lên Facebook Live & YouTube Live < 1 Giây.
- * Giao Diện Studio Tinh Gọn: Loại Bỏ Toàn Bộ Thông Báo Pop-up Rác, Chỉ Hiển Thị Thông Báo Trạng Thái Kết Nối Gọn Gàng Ở Đỉnh Màn Hình Top Banner.
+ * Giao Diện Studio Tinh Gọn: Nhãn Thông Báo Trạng Thái Dạng Pill Siêu Nhỏ Gọn (Chữ 10sp) Nằm Ở Góc Dưới Bên Trái Màn Hình Preview Không Che Khuôn Mặt.
  */
 class MainActivity : AppCompatActivity(), SurfaceHolder.Callback, 
     CameraSourceManager.CameraSourceListener, 
@@ -181,15 +181,15 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
         runOnUiThread {
             binding.tvNotificationBanner.text = message
             binding.tvNotificationBanner.visibility = View.VISIBLE
-            binding.tvNotificationBanner.setBackgroundColor(
-                if (isError) 0xDDFF3B30.toInt() else 0xDD28A745.toInt()
+            binding.tvNotificationBanner.setTextColor(
+                if (isError) 0xFFFF4D4D.toInt() else 0xFF38BDF8.toInt()
             )
             bannerHideRunnable?.let { mainHandler.removeCallbacks(it) }
             val hideRunnable = Runnable {
                 binding.tvNotificationBanner.visibility = View.GONE
             }
             bannerHideRunnable = hideRunnable
-            mainHandler.postDelayed(hideRunnable, 4500)
+            mainHandler.postDelayed(hideRunnable, 4000)
         }
     }
 
@@ -267,7 +267,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
 
             val resLabel = if (streamWidth == 1920) "1080p" else "720p"
             binding.tvStatusBadge.text = "🔴 LIVE BROADCASTING ($resLabel)"
-            showStudioNotification("🚀 ĐÃ CHUYỂN LUỒNG PHÁT SANG $label ($streamWidth x $streamHeight)!")
+            showStudioNotification("🚀 ĐÃ CHUYỂN LUỒNG PHÁT SANG $label!")
         }
     }
 
@@ -327,7 +327,7 @@ class MainActivity : AppCompatActivity(), SurfaceHolder.Callback,
             cameraSourceManager.h264Encoder = vEncoder
 
             val mbpsStr = "${streamBitrate / 1000000f} Mbps"
-            showStudioNotification("⚡ ĐÃ ĐỔI BĂNG THÔNG BITRATE SANG: $mbpsStr")
+            showStudioNotification("⚡ ĐÃ ĐỔI BĂNG THÔNG BITRATE: $mbpsStr")
         }
     }
 

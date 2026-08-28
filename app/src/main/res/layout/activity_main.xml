@@ -30,20 +30,20 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent" />
 
-            <!-- Top Studio Notification Banner Overlay -->
+            <!-- Bottom-Left Compact Studio Notification Pill Overlay (Góc dưới bên trái, chữ 10sp siêu nhỏ gọn, không che khuôn mặt) -->
             <TextView
                 android:id="@+id/tvNotificationBanner"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_gravity="top|center_horizontal"
-                android:layout_marginTop="16dp"
-                android:background="#CC28A745"
+                android:layout_gravity="bottom|start"
+                android:layout_margin="12dp"
+                android:background="@drawable/bg_notification_pill"
                 android:elevation="6dp"
-                android:paddingHorizontal="16dp"
-                android:paddingVertical="8dp"
-                android:text="🟢 ĐÃ KẾT NỐI THÀNH CÔNG FACEBOOK LIVE!"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="5dp"
+                android:text="🟢 ĐÃ KẾT NỐI FACEBOOK LIVE"
+                android:textColor="#38BDF8"
+                android:textSize="10sp"
                 android:textStyle="bold"
                 android:visibility="gone" />
 

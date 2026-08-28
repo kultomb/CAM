@@ -86,14 +86,12 @@ static void workerLoop(UvcEngineContext* ctx) {
     int altSetting = (ctx->altSetting > 0) ? ctx->altSetting : 1;
     int ifaceId = ctx->ifaceId;
 
-    int urbBufferSize = ISO_PACKETS * packetSize;
-
     LOGI("🟢 UVC Direct Render Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          ctx->fd, ifaceId, targetEp, packetSize, altSetting);
 
     int claimRc = ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifaceId);
     if (claimRc < 0) {
-        LOGE("❌ USBDEVFS_CLAIMINTERFACE (iface=%d) thất bại: errno=%d (%s)", ifaceId, errno, strerror(errno));
+        LOGE("❌ USBDEVFS_CLAIMINTERFACE (iface=%d) errno=%d (%s)", ifaceId, errno, strerror(errno));
     }
 
     struct usbdevfs_setinterface setif;
@@ -101,9 +99,47 @@ static void workerLoop(UvcEngineContext* ctx) {
     setif.altsetting = altSetting;
     int setIfRc = ioctl(ctx->fd, USBDEVFS_SETINTERFACE, &setif);
     if (setIfRc < 0) {
-        LOGE("❌ USBDEVFS_SETINTERFACE (iface=%d, alt=%d) thất bại: errno=%d (%s)", ifaceId, altSetting, errno, strerror(errno));
+        LOGE("❌ USBDEVFS_SETINTERFACE (iface=%d, alt=%d) errno=%d (%s)", ifaceId, altSetting, errno, strerror(errno));
     }
 
+    // Tự động thử nghiệm kích thước packetSize (1024 -> 512 -> 192 -> 128) nếu Kernel báo Message too long
+    int sizesToTry[] = { packetSize, 1024, 960, 896, 768, 512, 384, 192, 128 };
+    int workingPacketSize = packetSize;
+
+    for (int sizeCandidate : sizesToTry) {
+        if (sizeCandidate <= 0) continue;
+        int testUrbSize = ISO_PACKETS * sizeCandidate;
+        size_t urbStructSize = sizeof(struct usbdevfs_urb) + (ISO_PACKETS * sizeof(struct usbdevfs_iso_packet_desc));
+        std::vector<uint8_t> testUrbMem(urbStructSize, 0);
+        std::vector<uint8_t> testDataBuf(testUrbSize, 0);
+
+        struct usbdevfs_urb* testUrb = reinterpret_cast<struct usbdevfs_urb*>(testUrbMem.data());
+        testUrb->type = USBDEVFS_URB_TYPE_ISO;
+        testUrb->endpoint = targetEp;
+        testUrb->flags = USBDEVFS_URB_ISO_ASAP;
+        testUrb->buffer = testDataBuf.data();
+        testUrb->buffer_length = testUrbSize;
+        testUrb->number_of_packets = ISO_PACKETS;
+        for (int p = 0; p < ISO_PACKETS; ++p) {
+            testUrb->iso_frame_desc[p].length = sizeCandidate;
+        }
+
+        int rc = ioctl(ctx->fd, USBDEVFS_SUBMITURB, testUrb);
+        if (rc == 0) {
+            workingPacketSize = sizeCandidate;
+            ioctl(ctx->fd, USBDEVFS_DISCARDURB, testUrb);
+            LOGI("🟢 Đã tìm thấy kích thước Kernel PacketSize chấp thuận: %d bytes", workingPacketSize);
+            break;
+        } else if (errno != EMSGSIZE) {
+            // Lỗi khác EMSGSIZE nghĩa là URB đã được chấp nhận bởi host controller
+            workingPacketSize = sizeCandidate;
+            LOGI("🟢 Chấp thuận Kernel PacketSize: %d bytes (rc=%d, errno=%d)", workingPacketSize, rc, errno);
+            break;
+        }
+    }
+
+    packetSize = workingPacketSize;
+    int urbBufferSize = ISO_PACKETS * packetSize;
     size_t urbStructSize = sizeof(struct usbdevfs_urb) + (ISO_PACKETS * sizeof(struct usbdevfs_iso_packet_desc));
     std::vector<std::vector<uint8_t>> urbMemories(URB_COUNT, std::vector<uint8_t>(urbStructSize, 0));
     std::vector<std::vector<uint8_t>> dataBuffers(URB_COUNT, std::vector<uint8_t>(urbBufferSize, 0));
@@ -123,7 +159,7 @@ static void workerLoop(UvcEngineContext* ctx) {
 
         int submitRc = ioctl(ctx->fd, USBDEVFS_SUBMITURB, urb);
         if (submitRc < 0) {
-            LOGE("❌ USBDEVFS_SUBMITURB URB[%d] thất bại: errno=%d (%s)", i, errno, strerror(errno));
+            LOGE("❌ SUBMITURB URB[%d] (size=%d) errno=%d (%s)", i, packetSize, errno, strerror(errno));
         }
     }
 

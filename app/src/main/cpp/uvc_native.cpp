@@ -1,7 +1,5 @@
 #include <jni.h>
 #include <android/log.h>
-#include <android/native_window.h>
-#include <android/native_window_jni.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -28,7 +26,7 @@ static constexpr size_t MAX_FRAME_SIZE = 4 * 1024 * 1024;
 struct UvcEngineContext {
     int fd = -1;
     int epAddr = 0x83;
-    int maxPacketSize = 3072;
+    int maxPacketSize = 5120;
     int altSetting = 3;
 
     std::atomic<bool> running{false};
@@ -79,10 +77,10 @@ static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t leng
 }
 
 static void workerLoop(UvcEngineContext* ctx) {
-    int packetSize = ctx->maxPacketSize > 0 ? ctx->maxPacketSize : 3072;
+    int packetSize = ctx->maxPacketSize > 0 ? ctx->maxPacketSize : 5120;
     int urbBufferSize = ISO_PACKETS * packetSize;
 
-    LOGI("🟢 Dynamic 16KB UVC Native Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+    LOGI("🟢 UVC Native Iso Engine START (fd=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          ctx->fd, ctx->epAddr, packetSize, ctx->altSetting);
 
     int ifnum = 1;
@@ -132,7 +130,6 @@ static void workerLoop(UvcEngineContext* ctx) {
 
                     if (headerLen >= 2 && headerLen <= desc.actual_length) {
                         bool fid = (flags & 0x01) != 0;
-                        bool eof = (flags & 0x02) != 0;
                         bool err = (flags & 0x40) != 0;
 
                         if (!err) {
@@ -143,7 +140,7 @@ static void workerLoop(UvcEngineContext* ctx) {
                                     std::lock_guard<std::mutex> lock(ctx->frameMutex);
                                     frame.swap(ctx->frameBuffer);
                                 }
-                                if (frame.size() > 4 && frame[0] == 0xFF && frame[1] == 0xD8) {
+                                if (frame.size() > 100 && frame[0] == 0xFF && frame[1] == 0xD8) {
                                     ctx->fpsFrames++;
                                     deliverFrame(ctx, frame.data(), frame.size());
                                 }
@@ -157,18 +154,6 @@ static void workerLoop(UvcEngineContext* ctx) {
                                     ctx->frameBuffer.insert(ctx->frameBuffer.end(), buffer + offset + headerLen, buffer + offset + desc.actual_length);
                                 } else {
                                     ctx->frameBuffer.clear();
-                                }
-                            }
-
-                            if (eof) {
-                                std::vector<uint8_t> frame;
-                                {
-                                    std::lock_guard<std::mutex> lock(ctx->frameMutex);
-                                    frame.swap(ctx->frameBuffer);
-                                }
-                                if (frame.size() > 4 && frame[0] == 0xFF && frame[1] == 0xD8) {
-                                    ctx->fpsFrames++;
-                                    deliverFrame(ctx, frame.data(), frame.size());
                                 }
                             }
                         }
@@ -187,7 +172,7 @@ static void workerLoop(UvcEngineContext* ctx) {
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
         if (elapsed >= 1000) {
-            LOGI("🟢 [16KB DYNAMIC NATIVE UVC] FPS=%d", ctx->fpsFrames);
+            LOGI("🟢 [16KB UVC NATIVE ISO ENGINE] FPS=%d", ctx->fpsFrames);
             ctx->fpsFrames = 0;
             ctx->fpsStart = now;
         }

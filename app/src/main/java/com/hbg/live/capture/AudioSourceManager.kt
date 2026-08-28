@@ -2,7 +2,9 @@ package com.hbg.live.capture
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
@@ -37,6 +39,8 @@ class AudioSourceManager(
     @Volatile private var isRecording = false
     private var recordThread: Thread? = null
 
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
     companion object {
         private const val TAG = "AudioSourceManager"
     }
@@ -50,22 +54,16 @@ class AudioSourceManager(
 
     @SuppressLint("MissingPermission")
     private fun startRecordingForMode(mode: AudioSourceMode) {
-        val preferredSource = when (mode) {
-            AudioSourceMode.HDMI_AUDIO -> MediaRecorder.AudioSource.UNPROCESSED
-            AudioSourceMode.PHONE_MIC -> MediaRecorder.AudioSource.CAMCORDER
-        }
-
         val channelConfig = AudioFormat.CHANNEL_IN_STEREO
         val audioFormat = AudioFormat.ENCODING_PCM_16BIT
         val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
-        val bufferSize = maxOf(minBufferSize, 4096)
+        val bufferSize = maxOf(minBufferSize, 8192)
 
         val sourcesToTry = intArrayOf(
-            preferredSource,
             MediaRecorder.AudioSource.CAMCORDER,
             MediaRecorder.AudioSource.MIC,
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.UNPROCESSED
+            MediaRecorder.AudioSource.DEFAULT,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION
         )
 
         var record: AudioRecord? = null
@@ -92,6 +90,25 @@ class AudioSourceManager(
             return
         }
 
+        // Nếu người dùng chọn HDMI_AUDIO, ưu tiên ép đường dẫn âm thanh sang USB Audio Class (UAC) Capture Card
+        if (android.os.Build.VERSION.SDK_INT >= 23 && mode == AudioSourceMode.HDMI_AUDIO) {
+            try {
+                val inputDevices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+                val usbAudioDevice = inputDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_USB_DEVICE ||
+                    it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                }
+                if (usbAudioDevice != null) {
+                    record.setPreferredDevice(usbAudioDevice)
+                    StudioLogger.log(TAG, "🟢 Kích hoạt thu âm trực tiếp từ USB Audio Class (UAC) HDMI Capture: ${usbAudioDevice.productName}")
+                } else {
+                    StudioLogger.log(TAG, "ℹ️ Chưa thấy USB Audio Class riêng, sử dụng micro mặc định hệ thống.")
+                }
+            } catch (e: Throwable) {
+                StudioLogger.log(TAG, "Cảnh báo chỉ định thiết bị USB Audio: ${e.message}")
+            }
+        }
+
         try {
             audioRecord = record
             audioRecord?.startRecording()
@@ -99,46 +116,53 @@ class AudioSourceManager(
 
             recordThread = Thread {
                 Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-                val buffer = ShortArray(1024)
+                val buffer = ByteArray(4096)
 
                 while (isRecording) {
-                    val readCount = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                    if (readCount > 0) {
-                        val level = calculateRmsLevelPercent(buffer, readCount)
+                    val read = record.read(buffer, 0, buffer.size)
+                    if (read > 0) {
+                        val level = calculatePcmLevel(buffer, read)
                         listener.onAudioLevelChanged(level)
                     }
                 }
             }.apply {
-                name = "StudioAudioRecordThread"
+                name = "AudioSourceRecordThread"
                 start()
             }
 
-            StudioLogger.log(TAG, "► ĐÃ MỞ NGUỒN ÂM THANH: ${mode.displayName}")
+            StudioLogger.log(TAG, "🟢 AudioSourceManager Khởi Động Thu Âm Chế Độ: ${mode.displayName}")
+
         } catch (e: Throwable) {
-            StudioLogger.log(TAG, "❌ Lỗi khởi tạo AudioRecord (${mode.displayName})", e)
+            StudioLogger.log(TAG, "❌ Lỗi startRecordingForMode: ${e.message}")
         }
     }
 
-    private fun calculateRmsLevelPercent(buffer: ShortArray, readCount: Int): Int {
+    private fun calculatePcmLevel(pcmData: ByteArray, size: Int): Int {
         var sum = 0.0
-        for (i in 0 until readCount) {
-            val sample = buffer[i].toDouble()
-            sum += sample * sample
+        val samples = size / 2
+        for (i in 0 until samples) {
+            val sample = (pcmData[i * 2 + 1].toInt() shl 8) or (pcmData[i * 2].toInt() and 0xFF)
+            sum += (sample * sample).toDouble()
         }
-        val rms = sqrt(sum / readCount)
+        if (samples == 0) return 0
+        val rms = sqrt(sum / samples)
         val maxAmp = 32767.0
-        val percent = ((rms / maxAmp) * 100 * 3.5).toInt()
-        return percent.coerceIn(0, 100)
+        val percentage = (rms / maxAmp * 100).toInt()
+        return percentage.coerceIn(0, 100)
     }
 
     fun stopRecording() {
         isRecording = false
         try {
+            recordThread?.join(500)
+            recordThread = null
+        } catch (e: Throwable) {}
+
+        try {
             audioRecord?.stop()
             audioRecord?.release()
+            audioRecord = null
         } catch (e: Throwable) {}
-        audioRecord = null
-        recordThread = null
     }
 
     fun release() {

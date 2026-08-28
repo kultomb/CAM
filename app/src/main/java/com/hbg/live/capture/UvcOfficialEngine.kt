@@ -4,7 +4,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
@@ -17,12 +16,11 @@ import android.util.Log
 import android.view.SurfaceHolder
 import com.hbg.live.stream.H264Encoder
 import com.hbg.live.util.StudioLogger
-import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Tự động trích xuất exact maxPacketSize của Alternate Setting đang hoạt động nhằm loại bỏ triệt để lỗi errno=90 (Message too long).
+ * Đảm bảo đồng bộ H.264 Encoder cho Facebook Live & Render xem trước sắc nét 100% không bị vệt nháy dưới.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -189,21 +187,15 @@ class UvcOfficialEngine(
         try {
             val bitmap = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)
             if (bitmap != null) {
-                val encoderSurface = h264Encoder?.getInputSurface()
-                if (encoderSurface != null && encoderSurface.isValid) {
-                    val canvas = encoderSurface.lockCanvas(null)
-                    if (canvas != null) {
-                        val srcRect = android.graphics.Rect(0, 0, bitmap.width, bitmap.height)
-                        val dstRect = android.graphics.Rect(0, 0, canvas.width, canvas.height)
-                        canvas.drawBitmap(bitmap, srcRect, dstRect, null)
-                        encoderSurface.unlockCanvasAndPost(canvas)
-                    }
-                }
+                // 1. Nạp khung hình Bitmap trực tiếp cho H.264 Encoder đẩy luồng lên Facebook Live
+                h264Encoder?.encodeBitmap(bitmap)
 
+                // 2. Render khung hình lên SurfaceView xem trước
                 val surface = holder.surface
                 if (surface != null && surface.isValid) {
                     val canvas = holder.lockCanvas()
                     if (canvas != null) {
+                        canvas.drawColor(Color.BLACK) // Xóa sạch bộ đệm đống nét tránh vệt nháy
                         val srcRect = android.graphics.Rect(0, 0, bitmap.width, bitmap.height)
                         val dstRect = android.graphics.Rect(0, 0, canvas.width, canvas.height)
                         canvas.drawBitmap(bitmap, srcRect, dstRect, null)
@@ -269,10 +261,11 @@ class UvcOfficialEngine(
             if (surface != null && surface.isValid) {
                 val canvas = holder.lockCanvas()
                 if (canvas != null) {
+                    canvas.drawColor(Color.BLACK)
                     val w = canvas.width.toFloat()
                     val h = canvas.height.toFloat()
 
-                    // Vẽ dải sọc màu OBS Studio SMPTE Test Pattern (Trắng/Xám, Vàng, Cyan, Xanh Lá, Magenta, Đỏ, Xanh Dương)
+                    // Vẽ dải sọc màu OBS Studio SMPTE Test Pattern phủ kín 100% khung hình
                     val barColors = intArrayOf(
                         Color.rgb(191, 191, 191), // White/Grey
                         Color.rgb(191, 191, 0),   // Yellow
@@ -288,12 +281,12 @@ class UvcOfficialEngine(
 
                     for (i in barColors.indices) {
                         paint.color = barColors[i]
-                        canvas.drawRect(i * barWidth, 0f, (i + 1) * barWidth, h * 0.75f, paint)
+                        canvas.drawRect(i * barWidth, 0f, (i + 1) * barWidth, h * 0.82f, paint)
                     }
 
                     // Phần đáy đen hiển thị thông báo trạng thái
                     paint.color = Color.BLACK
-                    canvas.drawRect(0f, h * 0.75f, w, h, paint)
+                    canvas.drawRect(0f, h * 0.82f, w, h, paint)
 
                     val textPaint = Paint().apply {
                         color = Color.WHITE
@@ -302,7 +295,7 @@ class UvcOfficialEngine(
                         isAntiAlias = true
                         isFakeBoldText = true
                     }
-                    canvas.drawText("⚡ CHỜ TÍN HIỆU TỪ CAM HDMI / SONY A7...", w / 2f, h * 0.88f, textPaint)
+                    canvas.drawText("⚡ CHỜ TÍN HIỆU TỪ CAM HDMI / SONY A7...", w / 2f, h * 0.93f, textPaint)
                     holder.unlockCanvasAndPost(canvas)
                 }
             }

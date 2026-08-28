@@ -2,6 +2,7 @@ package com.hbg.live.stream
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.Rect
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -71,15 +72,23 @@ class H264Encoder(
         if (!isEncoderRunning || inputSurface == null) return
         try {
             val surface = inputSurface ?: return
-            val canvas = surface.lockHardwareCanvas() ?: return
-            try {
-                val dst = Rect(0, 0, width, height)
-                canvas.drawBitmap(bitmap, null, dst, null)
-            } finally {
-                surface.unlockCanvasAndPost(canvas)
+            val canvas = if (android.os.Build.VERSION.SDK_INT >= 23) {
+                try { surface.lockHardwareCanvas() } catch (e: Throwable) { null }
+            } else null
+
+            val finalCanvas = canvas ?: try { surface.lockCanvas(null) } catch (e: Throwable) { null }
+
+            if (finalCanvas != null) {
+                try {
+                    finalCanvas.drawColor(Color.BLACK)
+                    val dst = Rect(0, 0, width, height)
+                    finalCanvas.drawBitmap(bitmap, null, dst, null)
+                } finally {
+                    surface.unlockCanvasAndPost(finalCanvas)
+                }
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Lỗi nạp Bitmap vào H.264 Surface Encoder", e)
+            Log.e(TAG, "Lỗi encodeBitmap", e)
         }
     }
 
@@ -88,9 +97,22 @@ class H264Encoder(
             override fun run() {
                 if (!isEncoderRunning) return
                 try {
-                    drainEncoder()
+                    val codec = mediaCodec ?: return
+                    val bufferInfo = MediaCodec.BufferInfo()
+                    var outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 10000)
+
+                    while (outputBufferIndex >= 0) {
+                        val outputBuffer = codec.getOutputBuffer(outputBufferIndex)
+                        if (outputBuffer != null && (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                            if (bufferInfo.size > 0) {
+                                listener.onH264FrameAvailable(outputBuffer, bufferInfo)
+                            }
+                        }
+                        codec.releaseOutputBuffer(outputBufferIndex, false)
+                        outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
+                    }
                 } catch (e: Throwable) {
-                    Log.e(TAG, "Lỗi drain H.264 Encoder", e)
+                    Log.e(TAG, "Lỗi drain output H264", e)
                 }
                 if (isEncoderRunning) {
                     encoderHandler?.postDelayed(this, 10)
@@ -99,52 +121,26 @@ class H264Encoder(
         })
     }
 
-    private fun drainEncoder() {
-        val codec = mediaCodec ?: return
-        val bufferInfo = MediaCodec.BufferInfo()
-
-        while (true) {
-            val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
-            if (outputBufferIndex >= 0) {
-                val outputBuffer = codec.getOutputBuffer(outputBufferIndex)
-                if (outputBuffer != null && bufferInfo.size > 0) {
-                    outputBuffer.position(bufferInfo.offset)
-                    outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
-
-                    val frameBuffer = ByteBuffer.allocate(bufferInfo.size)
-                    frameBuffer.put(outputBuffer)
-                    frameBuffer.flip()
-
-                    val cloneInfo = MediaCodec.BufferInfo().apply {
-                        set(0, bufferInfo.size, bufferInfo.presentationTimeUs, bufferInfo.flags)
-                    }
-
-                    listener.onH264FrameAvailable(frameBuffer, cloneInfo)
-                }
-                codec.releaseOutputBuffer(outputBufferIndex, false)
-            } else if (outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                break
-            }
-        }
-    }
-
     fun stop() {
-        if (!isEncoderRunning) return
         isEncoderRunning = false
+        encoderThread?.quitSafely()
         try {
-            mediaCodec?.stop()
-            mediaCodec?.release()
+            encoderThread?.join(500)
+            encoderThread = null
+            encoderHandler = null
         } catch (e: Throwable) {}
-        mediaCodec = null
 
         try {
             inputSurface?.release()
+            inputSurface = null
         } catch (e: Throwable) {}
-        inputSurface = null
 
-        encoderThread?.quitSafely()
-        encoderThread = null
-        encoderHandler = null
-        Log.d(TAG, "Đã dừng H.264 Encoder")
+        try {
+            mediaCodec?.stop()
+            mediaCodec?.release()
+            mediaCodec = null
+        } catch (e: Throwable) {}
+
+        Log.d(TAG, "⏹ Đã dừng H.264 Encoder")
     }
 }

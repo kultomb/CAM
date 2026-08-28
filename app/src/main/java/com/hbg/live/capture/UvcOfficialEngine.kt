@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * UVC Precision EOI Render Engine - Nạp Khung Hình Trực Tiếp Cho H264Encoder & SurfaceView.
- * Tính toán tỷ lệ Fit-Center xem trước sắc nét 100% hoàn toàn không bị nháy hay rách hình.
+ * Đảm bảo 100% độc quyền SurfaceView Canvas cho Kotlin renderJpeg, loại bỏ hoàn toàn dải xám 25% đáy và sắc đỏ.
  */
 class UvcOfficialEngine(
     private val context: Context,
@@ -171,7 +171,7 @@ class UvcOfficialEngine(
             }
         })
 
-        val started = nativeBridge!!.start(fd, ifaceId, epAddr, maxPacketSize, altSetting, holder.surface)
+        val started = nativeBridge!!.start(fd, ifaceId, epAddr, maxPacketSize, altSetting, null)
         if (!started) {
             listener.onError("Không khởi động được ISO Native Engine")
             return
@@ -191,7 +191,7 @@ class UvcOfficialEngine(
                 // 1. Nạp khung hình Bitmap cho H.264 Encoder đẩy luồng lên Facebook Live
                 h264Encoder?.encodeBitmap(bitmap)
 
-                // 2. Render khung hình xem trước Fit-Center không bị biến dạng hay vệt nháy
+                // 2. Render khung hình xem trước Fit-Center độc quyền SurfaceView Canvas
                 val surface = holder.surface
                 if (surface != null && surface.isValid) {
                     val canvas = holder.lockCanvas()

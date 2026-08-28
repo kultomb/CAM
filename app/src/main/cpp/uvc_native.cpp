@@ -1,5 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -26,7 +28,7 @@ static constexpr size_t MAX_FRAME_SIZE = 4 * 1024 * 1024;
 struct UvcEngineContext {
     int fd = -1;
     int epAddr = 0x83;
-    int maxPacketSize = 5120;
+    int maxPacketSize = 3072;
     int altSetting = 3;
 
     std::atomic<bool> running{false};

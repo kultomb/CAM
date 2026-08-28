@@ -52,7 +52,7 @@ static UvcEngineContext* g_ctx = nullptr;
 static std::mutex g_ctxMutex;
 
 static void deliverFrame(UvcEngineContext* ctx, const uint8_t* data, size_t length) {
-    if (!ctx || !ctx->running || !data || length == 0) return;
+    if (!ctx || !ctx->running || !data || length < 100) return;
 
     JNIEnv* env = nullptr;
     bool attached = false;
@@ -87,7 +87,7 @@ static void workerLoop(UvcEngineContext* ctx) {
 
     int urbBufferSize = ISO_PACKETS * packetSize;
 
-    LOGI("🟢 16KB UVC Direct Render Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
+    LOGI("🟢 UVC Precision ISO Engine START (fd=%d, iface=%d, ep=0x%02X, packetSize=%d, alt=%d)", 
          ctx->fd, ifaceId, targetEp, packetSize, altSetting);
 
     ioctl(ctx->fd, USBDEVFS_CLAIMINTERFACE, &ifaceId);
@@ -118,15 +118,18 @@ static void workerLoop(UvcEngineContext* ctx) {
     }
 
     ctx->fpsStart = std::chrono::steady_clock::now();
+    uint64_t totalBytesReceived = 0;
+    int emptyReapCount = 0;
 
     while (ctx->running) {
         struct usbdevfs_urb* reapedUrb = nullptr;
         int rc = ioctl(ctx->fd, USBDEVFS_REAPURBNDELAY, &reapedUrb);
         if (rc == 0 && reapedUrb != nullptr) {
+            emptyReapCount = 0;
             uint8_t* buffer = reinterpret_cast<uint8_t*>(reapedUrb->buffer);
             for (int p = 0; p < reapedUrb->number_of_packets; ++p) {
                 const auto& desc = reapedUrb->iso_frame_desc[p];
-                if (desc.status == 0 && desc.actual_length > 2) {
+                if (desc.actual_length > 2) {
                     int offset = p * packetSize;
                     uint8_t headerLen = buffer[offset];
                     uint8_t flags = buffer[offset + 1];
@@ -136,30 +139,54 @@ static void workerLoop(UvcEngineContext* ctx) {
                         const uint8_t* payload = buffer + offset + headerLen;
                         size_t payloadLen = desc.actual_length - headerLen;
 
+                        if (payloadLen > 0) {
+                            totalBytesReceived += payloadLen;
+
+                            // Nhận diện JPEG SOI (0xFF, 0xD8) - Khởi đầu khung hình mới
+                            if (payloadLen >= 2 && payload[0] == 0xFF && payload[1] == 0xD8) {
+                                if (!ctx->frameBuffer.empty() && ctx->frameBuffer.size() > 1000) {
+                                    deliverFrame(ctx, ctx->frameBuffer.data(), ctx->frameBuffer.size());
+                                    ctx->frameCount++;
+                                    ctx->fpsFrames++;
+                                }
+                                ctx->frameBuffer.clear();
+                            }
+
+                            if (ctx->frameBuffer.size() + payloadLen <= MAX_FRAME_SIZE) {
+                                ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
+                            }
+
+                            // Nhận diện JPEG EOI (0xFF, 0xD9) - Kết thúc khung hình
+                            size_t bufSize = ctx->frameBuffer.size();
+                            if (bufSize >= 2 && ctx->frameBuffer[bufSize - 2] == 0xFF && ctx->frameBuffer[bufSize - 1] == 0xD9) {
+                                deliverFrame(ctx, ctx->frameBuffer.data(), bufSize);
+                                ctx->frameCount++;
+                                ctx->fpsFrames++;
+                                ctx->frameBuffer.clear();
+                            }
+                        }
+
                         if (fid != ctx->lastFid && ctx->lastFid != 0xFF) {
-                            if (!ctx->frameBuffer.empty()) {
+                            if (!ctx->frameBuffer.empty() && ctx->frameBuffer.size() > 1000) {
                                 deliverFrame(ctx, ctx->frameBuffer.data(), ctx->frameBuffer.size());
                                 ctx->frameCount++;
                                 ctx->fpsFrames++;
-
-                                auto now = std::chrono::steady_clock::now();
-                                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
-                                if (elapsed >= 1000) {
-                                    float fps = (ctx->fpsFrames * 1000.0f) / elapsed;
-                                    LOGI("📊 UVC Native FPS: %.1f (Tổng khung hình: %llu)", fps, (unsigned long long)ctx->frameCount);
-                                    ctx->fpsStart = now;
-                                    ctx->fpsFrames = 0;
-                                }
+                                ctx->frameBuffer.clear();
                             }
-                            ctx->frameBuffer.clear();
                         }
                         ctx->lastFid = fid;
-
-                        if (payloadLen > 0 && ctx->frameBuffer.size() + payloadLen <= MAX_FRAME_SIZE) {
-                            ctx->frameBuffer.insert(ctx->frameBuffer.end(), payload, payload + payloadLen);
-                        }
                     }
                 }
+            }
+
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - ctx->fpsStart).count();
+            if (elapsed >= 1000) {
+                float fps = (ctx->fpsFrames * 1000.0f) / elapsed;
+                LOGI("📊 UVC Native FPS: %.1f (Tổng khung hình: %llu, Đã nhận: %llu KB)", 
+                     fps, (unsigned long long)ctx->frameCount, (unsigned long long)(totalBytesReceived / 1024));
+                ctx->fpsStart = now;
+                ctx->fpsFrames = 0;
             }
 
             for (int p = 0; p < ISO_PACKETS; ++p) {
@@ -169,6 +196,10 @@ static void workerLoop(UvcEngineContext* ctx) {
             }
             ioctl(ctx->fd, USBDEVFS_SUBMITURB, reapedUrb);
         } else {
+            emptyReapCount++;
+            if (emptyReapCount % 2000 == 0) {
+                LOGI("⏳ Đang đợi dữ liệu ISOC từ USB Capture (Empty reap count: %d)...", emptyReapCount);
+            }
             std::this_thread::sleep_for(std::chrono::microseconds(500));
         }
     }

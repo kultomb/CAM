@@ -257,14 +257,40 @@ class UvcOfficialEngine(
             if (surface != null && surface.isValid) {
                 val canvas = holder.lockCanvas()
                 if (canvas != null) {
-                    canvas.drawColor(Color.BLACK)
-                    val paint = Paint().apply {
-                        color = Color.CYAN
-                        textSize = 36f
+                    val w = canvas.width.toFloat()
+                    val h = canvas.height.toFloat()
+
+                    // Vẽ dải sọc màu OBS Studio SMPTE Test Pattern (Trắng/Xám, Vàng, Cyan, Xanh Lá, Magenta, Đỏ, Xanh Dương)
+                    val barColors = intArrayOf(
+                        Color.rgb(191, 191, 191), // White/Grey
+                        Color.rgb(191, 191, 0),   // Yellow
+                        Color.rgb(0, 191, 191),   // Cyan
+                        Color.rgb(0, 191, 0),     // Green
+                        Color.rgb(191, 0, 191),   // Magenta
+                        Color.rgb(191, 0, 0),     // Red
+                        Color.rgb(0, 0, 191)      // Blue
+                    )
+
+                    val barWidth = w / barColors.size
+                    val paint = Paint().apply { style = Paint.Style.FILL }
+
+                    for (i in barColors.indices) {
+                        paint.color = barColors[i]
+                        canvas.drawRect(i * barWidth, 0f, (i + 1) * barWidth, h * 0.75f, paint)
+                    }
+
+                    // Phần đáy đen hiển thị thông báo trạng thái
+                    paint.color = Color.BLACK
+                    canvas.drawRect(0f, h * 0.75f, w, h, paint)
+
+                    val textPaint = Paint().apply {
+                        color = Color.WHITE
+                        textSize = 34f
                         textAlign = Paint.Align.CENTER
                         isAntiAlias = true
+                        isFakeBoldText = true
                     }
-                    canvas.drawText("ĐANG MỞ TÍN HIỆU CAM HDMI...", canvas.width / 2f, canvas.height / 2f, paint)
+                    canvas.drawText("⚡ CHỜ TÍN HIỆU TỪ CAM HDMI / SONY A7...", w / 2f, h * 0.88f, textPaint)
                     holder.unlockCanvasAndPost(canvas)
                 }
             }

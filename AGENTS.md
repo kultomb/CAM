@@ -66,7 +66,16 @@
 
 ---
 
-## 7. Đường Xử Lý Low-Copy Pipeline (Tối Ưu Bộ Nhớ CPU & Zero GC)
+## 7. Quy Tắc Lắp Ghép Khung Hình C++ MJPEG (FID Assembly Rule)
+
+* **Vấn đề**: Cả 2 cờ `EOF` (End of Frame) và `FID` (Frame ID Flip) cùng kích hoạt gọi `deliverFrame()`. Lệnh gọi lặp 2 lần làm gửi mảng byte rỗng (0 bytes) sang Kotlin, làm `BitmapFactory.decodeByteArray()` trả về `null` gây đen màn hình.
+* **Quy tắc Chuẩn**:
+  * Chỉ kích hoạt `deliverFrame()` khi **cờ FID đảo chuyển đổi (`ctx->lastFid != currentFid`)** VÀ mảng dữ liệu hoàn chỉnh `frame.size() > 100` bắt đầu bằng hai byte marker JPEG `0xFF 0xD8`.
+  * Tuyệt đối không gọi `deliverFrame()` 2 lần trên cùng một khung hình để tránh làm biến dạng hoặc vỡ ảnh.
+
+---
+
+## 8. Đường Xử Lý Low-Copy Pipeline (Tối Ưu Bộ Nhớ CPU & Zero GC)
 
 * **Nguyên lý Đỉnh Cao**: Tránh tạo rác GC: `MJPEG -> Bitmap ARGB_8888 -> Canvas -> Bitmap -> MediaCodec` (ngốn 500MB/s RAM).
 * **Sơ đồ Đường Xử Lý Low-Copy**:
@@ -88,7 +97,7 @@
 
 ---
 
-## 8. Cách Ly Hoàn Toàn Luồng Mạng & USB Thread
+## 9. Cách Ly Hoàn Toàn Luồng Mạng & USB Thread
 
 * **Bài học**: Khi tín hiệu mạng 5G / WiFi bị suy giảm hoặc lag, bộ đẩy RTMP/SRT bị nghẽn. Nếu không cách ly, bộ nghẽn mạng sẽ kéo chậm luồng C++ USB Reader, làm mất gói URB Isochronous và gây sọc hình / rớt kết nối USB.
 * **Quy tắc**:
@@ -97,7 +106,7 @@
 
 ---
 
-## 9. Thermal Controller Với State Machine Thích Ứng (Mát Máy)
+## 10. Thermal Controller Với State Machine Thích Ứng (Mát Máy)
 
 * **Chiến lược kiểm soát nhiệt độ theo State Machine**:
   * `NORMAL`: 1080p60 @ Bitrate cao.
@@ -108,7 +117,7 @@
 
 ---
 
-## 10. USB Watchdog State Machine & Quy Trình Tái Phục Hồi An Toàn
+## 11. USB Watchdog State Machine & Quy Trình Tái Phục Hồi An Toàn
 
 * **State Machine Phục Hồi**:
   ```text
@@ -123,7 +132,7 @@
 
 ---
 
-## 11. Phác Đồ Kế Hoạch Thử Nghiệm 4 Tầng (Verification Plan)
+## 12. Phác Đồ Kế Hoạch Thử Nghiệm 4 Tầng (Verification Plan)
 
 * **TEST 1 — USB**: 100 lần cắm/rút liên tục -> 0 native crash, 0 deadlock, 0 FD leak.
 * **TEST 2 — Video**: 1080p30 / 1080p60 chạy liên tục 30-60 phút -> FPS ổn định, drop rate thấp, 0 vỡ hình.
